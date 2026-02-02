@@ -1,9 +1,10 @@
-import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import React, { useState } from "react";
+import { View, Text, TouchableOpacity, StyleSheet, TextInput } from "react-native";
 import { MotiView } from "moti";
-import { CheckCircle2, XCircle, HelpCircle, ToggleLeft, PenLine, Target } from "lucide-react-native";
+import { CheckCircle2, XCircle, HelpCircle, ToggleLeft, PenLine, Target, Send } from "lucide-react-native";
 import { GameHaptics } from "../../utils/sounds";
 import { RoundType } from "../../services/gemini/gemini";
+import { isFuzzyMatch } from "../../utils/answerMatching";
 
 interface QuestionCardProps {
     player: { name: string; age: number; avatar_emoji?: string };
@@ -13,6 +14,7 @@ interface QuestionCardProps {
     selectedOption?: string;
     isRevealing: boolean;
     correctAnswer: string;
+    acceptableAnswers?: string[];
     accentColor: string;
     questionType?: RoundType;
     difficulty?: number;
@@ -35,12 +37,25 @@ export const QuestionCard = ({
     selectedOption,
     isRevealing,
     correctAnswer,
+    acceptableAnswers = [],
     accentColor,
     questionType = "multiple_choice",
     difficulty,
 }: QuestionCardProps) => {
     const typeInfo = QUESTION_TYPE_INFO[questionType] || QUESTION_TYPE_INFO["multiple_choice"];
     const TypeIcon = typeInfo.Icon;
+    const isTextInput = (questionType === "complete_phrase" || questionType === "estimation") && (!options || options.length === 0);
+    const [textAnswer, setTextAnswer] = useState("");
+    const [textSubmitted, setTextSubmitted] = useState(false);
+
+    const handleTextSubmit = () => {
+        if (!textAnswer.trim() || textSubmitted || isRevealing) return;
+        setTextSubmitted(true);
+        GameHaptics.select();
+        onSelect(textAnswer.trim());
+    };
+
+    const textIsCorrect = textSubmitted ? isFuzzyMatch(textAnswer.trim(), correctAnswer, acceptableAnswers) : false;
 
     return (
         <MotiView
@@ -75,77 +90,128 @@ export const QuestionCard = ({
             {/* Question */}
             <Text style={styles.question}>{question}</Text>
 
-            {/* Options */}
-            <View style={styles.optionsContainer}>
-                {options.map((option, index) => {
-                    const isSelected = selectedOption === option;
-                    const isCorrect = isRevealing && option === correctAnswer;
-                    const isWrong = isRevealing && isSelected && option !== correctAnswer;
-                    const isUnselected = isRevealing && !isSelected && !isCorrect;
-
-                    return (
-                        <MotiView
-                            key={index}
-                            from={{ opacity: 0, translateX: -10 }}
-                            animate={{
-                                opacity: isUnselected ? 0.4 : 1,
-                                translateX: 0,
-                                scale: isCorrect ? 1.02 : 1,
-                            }}
-                            transition={{ delay: index * 50 }}
-                        >
+            {/* Options or Text Input */}
+            {isTextInput ? (
+                <View style={styles.textInputContainer}>
+                    <View style={[styles.textInputWrapper, { borderColor: isRevealing ? (textIsCorrect ? '#10b981' : '#ef4444') : `${accentColor}66` }]}>
+                        <TextInput
+                            style={styles.textInput}
+                            value={textAnswer}
+                            onChangeText={setTextAnswer}
+                            placeholder={questionType === "estimation" ? "Enter a number..." : "Type your answer..."}
+                            placeholderTextColor="#475569"
+                            editable={!isRevealing && !textSubmitted}
+                            keyboardType={questionType === "estimation" ? "numeric" : "default"}
+                            returnKeyType="done"
+                            onSubmitEditing={handleTextSubmit}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                        />
+                        {!isRevealing && !textSubmitted && (
                             <TouchableOpacity
-                                onPress={() => {
-                                    if (!isRevealing) {
-                                        GameHaptics.select();
-                                        onSelect(option);
-                                    }
-                                }}
-                                disabled={isRevealing}
-                                activeOpacity={0.7}
-                                style={[
-                                    styles.option,
-                                    isSelected && !isRevealing && [styles.optionSelected, { borderColor: accentColor, backgroundColor: `${accentColor}22` }],
-                                    isCorrect && styles.optionCorrect,
-                                    isWrong && styles.optionWrong,
-                                ]}
+                                onPress={handleTextSubmit}
+                                disabled={!textAnswer.trim()}
+                                style={[styles.textSubmitBtn, { backgroundColor: accentColor }, !textAnswer.trim() && { opacity: 0.4 }]}
                             >
-                                <View style={[
-                                    styles.optionLetter,
-                                    isSelected && !isRevealing && { backgroundColor: accentColor },
-                                    isCorrect && styles.optionLetterCorrect,
-                                    isWrong && styles.optionLetterWrong,
-                                ]}>
-                                    <Text style={[
-                                        styles.optionLetterText,
-                                        (isSelected || isCorrect || isWrong) && styles.optionLetterTextActive,
-                                    ]}>
-                                        {OPTION_LETTERS[index]}
+                                <Send size={18} color="white" />
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                    {isRevealing && (
+                        <MotiView from={{ opacity: 0, translateY: 8 }} animate={{ opacity: 1, translateY: 0 }} style={styles.textRevealContainer}>
+                            {textSubmitted && (
+                                <View style={[styles.textResultBadge, { backgroundColor: textIsCorrect ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)' }]}>
+                                    {textIsCorrect ? <CheckCircle2 size={18} color="#10b981" /> : <XCircle size={18} color="#ef4444" />}
+                                    <Text style={[styles.textResultText, { color: textIsCorrect ? '#10b981' : '#ef4444' }]}>
+                                        {textIsCorrect ? "Correct!" : "Not quite..."}
                                     </Text>
                                 </View>
-                                <Text style={[
-                                    styles.optionText,
-                                    isSelected && !isRevealing && { color: 'white' },
-                                    isCorrect && styles.optionTextCorrect,
-                                    isWrong && styles.optionTextWrong,
-                                ]} numberOfLines={3}>
-                                    {option}
-                                </Text>
-                                {isCorrect && (
-                                    <MotiView from={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring" }}>
-                                        <CheckCircle2 size={22} color="#10b981" />
-                                    </MotiView>
-                                )}
-                                {isWrong && (
-                                    <MotiView from={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring" }}>
-                                        <XCircle size={22} color="#ef4444" />
-                                    </MotiView>
-                                )}
-                            </TouchableOpacity>
+                            )}
+                            {!textSubmitted && (
+                                <View style={[styles.textResultBadge, { backgroundColor: 'rgba(239,68,68,0.15)' }]}>
+                                    <XCircle size={18} color="#ef4444" />
+                                    <Text style={[styles.textResultText, { color: '#ef4444' }]}>Time's up!</Text>
+                                </View>
+                            )}
+                            <View style={styles.correctAnswerBox}>
+                                <Text style={styles.correctAnswerLabel}>Correct Answer</Text>
+                                <Text style={[styles.correctAnswerValue, { color: accentColor }]}>{correctAnswer}</Text>
+                            </View>
                         </MotiView>
-                    );
-                })}
-            </View>
+                    )}
+                </View>
+            ) : (
+                <View style={styles.optionsContainer}>
+                    {options.map((option, index) => {
+                        const isSelected = selectedOption === option;
+                        const isCorrect = isRevealing && option === correctAnswer;
+                        const isWrong = isRevealing && isSelected && option !== correctAnswer;
+                        const isUnselected = isRevealing && !isSelected && !isCorrect;
+
+                        return (
+                            <MotiView
+                                key={index}
+                                from={{ opacity: 0, translateX: -10 }}
+                                animate={{
+                                    opacity: isUnselected ? 0.4 : 1,
+                                    translateX: 0,
+                                    scale: isCorrect ? 1.02 : 1,
+                                }}
+                                transition={{ delay: index * 50 }}
+                            >
+                                <TouchableOpacity
+                                    onPress={() => {
+                                        if (!isRevealing) {
+                                            GameHaptics.select();
+                                            onSelect(option);
+                                        }
+                                    }}
+                                    disabled={isRevealing}
+                                    activeOpacity={0.7}
+                                    style={[
+                                        styles.option,
+                                        isSelected && !isRevealing && [styles.optionSelected, { borderColor: accentColor, backgroundColor: `${accentColor}22` }],
+                                        isCorrect && styles.optionCorrect,
+                                        isWrong && styles.optionWrong,
+                                    ]}
+                                >
+                                    <View style={[
+                                        styles.optionLetter,
+                                        isSelected && !isRevealing && { backgroundColor: accentColor },
+                                        isCorrect && styles.optionLetterCorrect,
+                                        isWrong && styles.optionLetterWrong,
+                                    ]}>
+                                        <Text style={[
+                                            styles.optionLetterText,
+                                            (isSelected || isCorrect || isWrong) && styles.optionLetterTextActive,
+                                        ]}>
+                                            {OPTION_LETTERS[index]}
+                                        </Text>
+                                    </View>
+                                    <Text style={[
+                                        styles.optionText,
+                                        isSelected && !isRevealing && { color: 'white' },
+                                        isCorrect && styles.optionTextCorrect,
+                                        isWrong && styles.optionTextWrong,
+                                    ]} numberOfLines={3}>
+                                        {option}
+                                    </Text>
+                                    {isCorrect && (
+                                        <MotiView from={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring" }}>
+                                            <CheckCircle2 size={22} color="#10b981" />
+                                        </MotiView>
+                                    )}
+                                    {isWrong && (
+                                        <MotiView from={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring" }}>
+                                            <XCircle size={22} color="#ef4444" />
+                                        </MotiView>
+                                    )}
+                                </TouchableOpacity>
+                            </MotiView>
+                        );
+                    })}
+                </View>
+            )}
         </MotiView>
     );
 };
@@ -276,5 +342,65 @@ const styles = StyleSheet.create({
     },
     optionTextWrong: {
         color: '#ef4444',
+    },
+    // Text input styles
+    textInputContainer: {
+        gap: 12,
+    },
+    textInputWrapper: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderWidth: 2,
+        borderRadius: 16,
+        backgroundColor: 'rgba(30, 41, 59, 0.5)',
+        paddingRight: 6,
+    },
+    textInput: {
+        flex: 1,
+        padding: 16,
+        color: 'white',
+        fontSize: 18,
+        fontWeight: '500',
+    },
+    textSubmitBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    textRevealContainer: {
+        gap: 10,
+    },
+    textResultBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+    },
+    textResultText: {
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    correctAnswerBox: {
+        alignItems: 'center',
+        padding: 14,
+        borderRadius: 14,
+        backgroundColor: 'rgba(255,255,255,0.06)',
+    },
+    correctAnswerLabel: {
+        color: '#94a3b8',
+        fontSize: 12,
+        fontWeight: '600',
+        marginBottom: 4,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+    },
+    correctAnswerValue: {
+        fontSize: 22,
+        fontWeight: 'bold',
     },
 });

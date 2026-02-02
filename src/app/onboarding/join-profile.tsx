@@ -6,47 +6,20 @@ import { MotiView } from "moti";
 import { CheckCircle2 } from "lucide-react-native";
 import { GameHaptics } from "../../utils/sounds";
 import { DifficultySlider } from "../../components/ui/DifficultySlider";
-import { SUBJECTS, isPredefinedSubject } from "../../constants/subjects";
-import { CustomSubjectInput, CustomSubjectChip } from "../../components/ui/CustomSubjectInput";
 
 const EMOJIS = ["🐶", "🐱", "🦊", "🐻", "🐨", "🐯", "🦁", "🐼", "🐵", "🐸", "🦉", "🦄", "🦖", "🐙", "🍕", "🎮", "🎸", "🚀"];
 
 export default function JoinProfileScreen() {
     const router = useRouter();
     const { code, playerName } = useLocalSearchParams<{ code: string; playerName: string }>();
-    const { joinGame, setSelectedSubjectsForPlayer, currentPlayerId } = useGame();
+    const { joinGame, currentPlayerId } = useGame();
 
     const [selectedEmoji, setSelectedEmoji] = useState("🐶");
     const [loading, setLoading] = useState(false);
     const [ageType, setAgeType] = useState<"adult" | "child">("adult");
     const [childAge, setChildAge] = useState("");
     const [difficultyLevel, setDifficultyLevel] = useState(5);
-    const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
-
-    const toggleSubject = (subjectName: string) => {
-        GameHaptics.select();
-        setSelectedSubjects(prev => {
-            if (prev.includes(subjectName)) return prev.filter(s => s !== subjectName);
-            if (prev.length >= 6) return prev;
-            return [...prev, subjectName];
-        });
-    };
-
-    const customSubjects = selectedSubjects.filter(s => !isPredefinedSubject(s));
-
-    const handleAddCustomSubject = (subject: string) => {
-        setSelectedSubjects(prev => {
-            if (prev.length >= 6) return prev;
-            if (prev.some(s => s.toLowerCase() === subject.toLowerCase())) return prev;
-            return [...prev, subject];
-        });
-    };
-
-    const handleRemoveCustomSubject = (subject: string) => {
-        GameHaptics.select();
-        setSelectedSubjects(prev => prev.filter(s => s !== subject));
-    };
 
     const handleJoinGame = async () => {
         if (!code || !playerName) {
@@ -54,14 +27,12 @@ export default function JoinProfileScreen() {
             return;
         }
         if (ageType === "child" && !childAge.trim()) return;
-        if (selectedSubjects.length < 3) return;
 
         setLoading(true);
         setError(null);
         try {
             const playerAge = ageType === "adult" ? 25 : parseInt(childAge) || 10;
             const playerId = await joinGame(code, playerName, selectedEmoji, "General Knowledge", playerAge);
-            setSelectedSubjectsForPlayer(playerId, selectedSubjects);
             router.push("/game/lobby");
         } catch (err: any) {
             const message = err?.message || "Failed to join game. Please check the code and try again.";
@@ -145,51 +116,6 @@ export default function JoinProfileScreen() {
                     <DifficultySlider value={difficultyLevel} onChange={setDifficultyLevel} />
                 </View>
 
-                {/* Subject Selection */}
-                <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Pick your Subjects</Text>
-                    <Text style={styles.sectionSubtitle}>Choose 3-6 subjects ({selectedSubjects.length}/6)</Text>
-                    <View style={styles.subjectGrid}>
-                        {SUBJECTS.filter(s => s.name !== "General Knowledge").map((subject) => {
-                            const isSelected = selectedSubjects.includes(subject.name);
-                            const isFull = selectedSubjects.length >= 6 && !isSelected;
-                            return (
-                                <TouchableOpacity
-                                    key={subject.name}
-                                    onPress={() => toggleSubject(subject.name)}
-                                    disabled={isFull}
-                                    activeOpacity={0.7}
-                                    style={[
-                                        styles.subjectChip,
-                                        isSelected && { backgroundColor: `${subject.color}22`, borderColor: `${subject.color}88` },
-                                        isFull && { opacity: 0.35 },
-                                    ]}
-                                >
-                                    <Text style={styles.subjectChipIcon}>{subject.icon}</Text>
-                                    <Text style={[styles.subjectChipText, isSelected && { color: subject.color }]}>{subject.name}</Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </View>
-
-                    {/* Custom subjects */}
-                    <View style={styles.customSection}>
-                        <Text style={styles.customLabel}>Or add your own:</Text>
-                        {customSubjects.length > 0 && (
-                            <View style={styles.customChipsRow}>
-                                {customSubjects.map(s => (
-                                    <CustomSubjectChip key={s} label={s} onRemove={() => handleRemoveCustomSubject(s)} />
-                                ))}
-                            </View>
-                        )}
-                        <CustomSubjectInput
-                            onAdd={handleAddCustomSubject}
-                            existingSubjects={selectedSubjects}
-                            maxReached={selectedSubjects.length >= 6}
-                        />
-                    </View>
-                </View>
-
                 {error && (
                     <View style={styles.errorContainer}>
                         <Text style={styles.errorText}>{error}</Text>
@@ -198,8 +124,8 @@ export default function JoinProfileScreen() {
 
                 <TouchableOpacity
                     onPress={handleJoinGame}
-                    disabled={loading || selectedSubjects.length < 3}
-                    style={[styles.joinButton, (loading || selectedSubjects.length < 3) && styles.joinButtonDisabled]}
+                    disabled={loading}
+                    style={[styles.joinButton, loading && styles.joinButtonDisabled]}
                 >
                     {loading ? (
                         <ActivityIndicator color="white" />
@@ -253,17 +179,6 @@ const styles = StyleSheet.create({
         color: '#64748b',
         marginBottom: 16,
     },
-    customSection: { marginTop: 16 },
-    customLabel: { color: '#94a3b8', fontSize: 13, fontWeight: '600', marginBottom: 10 },
-    customChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-    subjectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-    subjectChip: {
-        flexDirection: 'row', alignItems: 'center', gap: 8,
-        paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
-        backgroundColor: '#0f172a', borderWidth: 2, borderColor: '#1e293b',
-    },
-    subjectChipIcon: { fontSize: 18 },
-    subjectChipText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
     avatarScroll: {
         gap: 12,
         paddingVertical: 8,

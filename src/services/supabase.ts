@@ -16,6 +16,9 @@ export type GameData = {
     code: string;
     status: 'lobby' | 'playing' | 'finished';
     current_round_number: number;
+    subjects: string[];
+    current_round_subject: string | null;
+    players_answered: string[];
     created_at: string;
 };
 

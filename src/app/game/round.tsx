@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { View, Text, SafeAreaView, ScrollView, ActivityIndicator, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { useGame } from "../../context/GameContext";
@@ -7,8 +7,9 @@ import { QuestionCard } from "../../components/game/QuestionCard";
 import { Confetti } from "../../components/ui/Confetti";
 import { MotiView, AnimatePresence } from "moti";
 import { generateQuestion, Question, RoundType } from "../../services/gemini/gemini";
+import { isFuzzyMatch } from "../../utils/answerMatching";
 import { DifficultySlider } from "../../components/ui/DifficultySlider";
-import { Sparkles, XCircle, Trophy, Flame, ArrowLeft } from "lucide-react-native";
+import { Sparkles, XCircle, Trophy, Flame, ArrowLeft, Clock } from "lucide-react-native";
 import { GameHaptics } from "../../utils/sounds";
 
 const THEMES: Record<string, { bg: string; accent: string }> = {
@@ -32,15 +33,16 @@ const THEMES: Record<string, { bg: string; accent: string }> = {
 export default function RoundScreen() {
     const router = useRouter();
     const {
-        players, settings, currentPlayerId, gameStats,
+        players, settings, currentPlayerId, gameStats, game, isHost,
+        gameSubjects,
         recordAnswer, getNarratorComment, getLeaderboard,
         getDifficultyForPlayer, setDifficultyForPlayer, setSubjectForPlayer,
-        getSelectedSubjectsForPlayer,
+        updateRoundSubject, markPlayerAnswered, advanceToNextRound,
     } = useGame();
 
     const [currentRound, setCurrentRound] = useState(1);
     const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
-    const [phase, setPhase] = useState<"starting" | "generating" | "question" | "revealing">("starting");
+    const [phase, setPhase] = useState<"starting" | "generating" | "question" | "revealing" | "waiting">("starting");
     const [selectedOption, setSelectedOption] = useState<string | undefined>(undefined);
     const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
     const [narratorComment, setNarratorComment] = useState("");
@@ -49,20 +51,22 @@ export default function RoundScreen() {
     const [pointsEarned, setPointsEarned] = useState(0);
     const [showScoreboard, setShowScoreboard] = useState(false);
     const [countdown, setCountdown] = useState(3);
+    const [roundSubject, setRoundSubject] = useState<string | null>(null);
     const questionStartTime = useRef<number>(0);
+    const hasGeneratedForRound = useRef<number>(0);
 
     // In different_devices mode, each device only plays for its own player
-    const isMultiplayer = settings.mode === "different_devices";
+    const isOnline = settings.mode === "different_devices";
     const localPlayer = players.find(p => p.id === currentPlayerId) || players[0];
-    const currentPlayer = isMultiplayer ? localPlayer : (players[currentPlayerIndex] || players[0]);
+    const currentPlayer = isOnline ? localPlayer : (players[currentPlayerIndex] || players[0]);
     const playerStats = currentPlayer ? gameStats[currentPlayer.id] : null;
 
     // Safety: clamp playerIndex to valid range
     useEffect(() => {
-        if (!isMultiplayer && currentPlayerIndex >= players.length && players.length > 0) {
+        if (!isOnline && currentPlayerIndex >= players.length && players.length > 0) {
             setCurrentPlayerIndex(0);
         }
-    }, [currentPlayerIndex, players.length, isMultiplayer]);
+    }, [currentPlayerIndex, players.length, isOnline]);
 
     const getTheme = () => {
         if (!currentQuestion?.topic) return THEMES["Default"];
@@ -81,18 +85,87 @@ export default function RoundScreen() {
 
     const currentRoundType = getRoundType(currentRound);
 
-    // Auto-pick a random subject from the player's pre-selected subjects
-    const pickRandomSubject = () => {
-        if (!currentPlayer) return "General Knowledge";
-        const subjects = getSelectedSubjectsForPlayer(currentPlayer.id);
-        if (!subjects || subjects.length === 0) return "General Knowledge";
-        return subjects[Math.floor(Math.random() * subjects.length)];
-    };
+    // Pick a random subject from the game-wide subjects
+    const pickRandomSubject = useCallback(() => {
+        if (!gameSubjects || gameSubjects.length === 0) return "General Knowledge";
+        return gameSubjects[Math.floor(Math.random() * gameSubjects.length)];
+    }, [gameSubjects]);
 
-    // Generate a question for the current player with a random subject
-    const generateNextQuestion = async () => {
+    // For online mode: Host picks subject for the round and broadcasts it
+    // Non-host waits for the subject from the game record, then generates their own question
+    useEffect(() => {
+        if (!isOnline || !game) return;
+
+        if (isHost && phase === "starting" && hasGeneratedForRound.current !== currentRound) {
+            // Host picks the round subject and broadcasts it
+            const subject = pickRandomSubject();
+            setRoundSubject(subject);
+            updateRoundSubject(subject, currentRound);
+            hasGeneratedForRound.current = currentRound;
+        }
+    }, [isOnline, isHost, game, phase, currentRound, pickRandomSubject]);
+
+    // Non-host: watch for the host's subject broadcast
+    useEffect(() => {
+        if (!isOnline || isHost || !game) return;
+
+        if (game.current_round_subject && game.current_round_number === currentRound && phase === "starting") {
+            setRoundSubject(game.current_round_subject);
+        }
+    }, [isOnline, isHost, game?.current_round_subject, game?.current_round_number, currentRound, phase]);
+
+    // Online: when all players have answered, host advances to next round
+    useEffect(() => {
+        if (!isOnline || !isHost || !game || phase !== "waiting") return;
+
+        const answeredCount = game.players_answered?.length || 0;
+        const totalPlayers = players.length;
+
+        if (answeredCount >= totalPlayers) {
+            // Small delay to ensure UI updates are visible
+            setTimeout(() => {
+                if (currentRound < settings.totalRounds) {
+                    const nextRound = currentRound + 1;
+                    advanceToNextRound(nextRound);
+                    setCurrentRound(nextRound);
+                    setPhase("starting");
+                    setSelectedOption(undefined);
+                    setCurrentQuestion(null);
+                    setCountdown(3);
+                    setPointsEarned(0);
+                    setRoundSubject(null);
+                } else {
+                    router.push("/game/results");
+                }
+            }, 1500);
+        }
+    }, [isOnline, isHost, game?.players_answered, players.length, phase, currentRound, settings.totalRounds]);
+
+    // Non-host: watch for host advancing the round or game finishing
+    useEffect(() => {
+        if (!isOnline || isHost || !game) return;
+
+        // Game finished — go to results
+        if (game.status === "finished") {
+            router.push("/game/results");
+            return;
+        }
+
+        if (game.current_round_number > currentRound && phase === "waiting") {
+            setCurrentRound(game.current_round_number);
+            setPhase("starting");
+            setSelectedOption(undefined);
+            setCurrentQuestion(null);
+            setCountdown(3);
+            setPointsEarned(0);
+            setRoundSubject(null);
+        }
+    }, [isOnline, isHost, game?.current_round_number, game?.status, currentRound, phase]);
+
+    // Generate a question for the current player with the round's subject
+    const generateNextQuestion = async (subjectOverride?: string) => {
         if (!currentPlayer) return;
-        const subject = pickRandomSubject();
+        const subject = subjectOverride || roundSubject || pickRandomSubject();
         setSubjectForPlayer(currentPlayer.id, subject);
         setPhase("generating");
         setGenerationError(null);
@@ -115,14 +188,22 @@ export default function RoundScreen() {
     };
 
     // Countdown effect — after countdown, auto-generate question
+    // For online mode, wait until roundSubject is set before generating
     useEffect(() => {
         if (phase === "starting") {
+            // For online non-host, wait for subject from host
+            if (isOnline && !isHost && !roundSubject) return;
+
+            // For same_device, pick subject on the fly
+            const subjectForRound = isOnline ? roundSubject : pickRandomSubject();
+            if (!isOnline) setRoundSubject(subjectForRound);
+
             GameHaptics.countdown();
             const interval = setInterval(() => {
                 setCountdown(prev => {
                     if (prev <= 1) {
                         clearInterval(interval);
-                        generateNextQuestion();
+                        generateNextQuestion(subjectForRound || undefined);
                         return 3;
                     }
                     GameHaptics.countdown();
@@ -131,25 +212,40 @@ export default function RoundScreen() {
             }, 1000);
             return () => clearInterval(interval);
         }
-    }, [phase, currentPlayerIndex, currentRound]);
+    }, [phase, currentPlayerIndex, currentRound, roundSubject, isOnline, isHost]);
 
-    const handleTimerExpire = React.useCallback(() => {
+    const handleTimerExpire = useCallback(() => {
         if (phase === "question") {
             recordAnswer(currentPlayer.id, false, currentQuestion?.topic || "General");
+            // Online: mark player as answered even on timeout
+            if (isOnline && currentPlayerId) {
+                markPlayerAnswered(currentPlayerId);
+            }
             const comment = getNarratorComment(false, 0, currentPlayer.name);
             setNarratorComment(comment);
             GameHaptics.wrong();
             setPhase("revealing");
         }
-    }, [phase, currentPlayer, currentQuestion]);
+    }, [phase, currentPlayer, currentQuestion, isOnline, currentPlayerId]);
 
     const handleSelect = (option: string) => {
         if (phase !== "question") return;
         const answerTime = Date.now() - questionStartTime.current;
         setSelectedOption(option);
-        const isCorrect = option === currentQuestion?.correctAnswer;
+
+        let isCorrect: boolean;
+        if (currentRoundType === "complete_phrase" || currentRoundType === "estimation") {
+            isCorrect = isFuzzyMatch(option, currentQuestion?.correctAnswer || "", currentQuestion?.acceptableAnswers || []);
+        } else {
+            isCorrect = option === currentQuestion?.correctAnswer;
+        }
 
         recordAnswer(currentPlayer.id, isCorrect, currentQuestion?.topic || "General", answerTime);
+
+        // Online: mark this player as having answered
+        if (isOnline && currentPlayerId) {
+            markPlayerAnswered(currentPlayerId);
+        }
 
         const newStreak = isCorrect ? (playerStats?.streak || 0) + 1 : 0;
         const streakMultiplier = newStreak >= 5 ? 2.5 : newStreak >= 3 ? 2 : newStreak >= 2 ? 1.5 : 1;
@@ -185,18 +281,12 @@ export default function RoundScreen() {
     };
 
     const advanceToNext = () => {
-        if (isMultiplayer) {
-            if (currentRound < settings.totalRounds) {
-                setCurrentRound(prev => prev + 1);
-                setPhase("starting");
-                setSelectedOption(undefined);
-                setCurrentQuestion(null);
-                setCountdown(3);
-                setPointsEarned(0);
-            } else {
-                router.push("/game/results");
-            }
+        if (isOnline) {
+            // Online: go to waiting phase until all players have answered
+            // The useEffect watching players_answered will handle advancing
+            setPhase("waiting");
         } else {
+            // Same device: cycle through players, then advance round
             if (currentPlayerIndex < players.length - 1) {
                 setCurrentPlayerIndex(prev => prev + 1);
                 setPhase("starting");
@@ -212,6 +302,7 @@ export default function RoundScreen() {
                 setCurrentQuestion(null);
                 setCountdown(3);
                 setPointsEarned(0);
+                setRoundSubject(null);
             } else {
                 router.push("/game/results");
             }
@@ -261,6 +352,45 @@ export default function RoundScreen() {
                     <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
                         <Text style={styles.backButtonText}>Back to Lobby</Text>
                     </TouchableOpacity>
+                </View>
+            </SafeAreaView>
+        );
+    }
+
+    // Waiting for others (online multiplayer)
+    if (phase === "waiting") {
+        const answeredCount = game?.players_answered?.length || 0;
+        const totalPlayers = players.length;
+        const waitingFor = players.filter(p => !(game?.players_answered || []).includes(p.id));
+
+        return (
+            <SafeAreaView style={styles.container}>
+                <View style={styles.loadingContainer}>
+                    <MotiView
+                        from={{ scale: 0.8, opacity: 0.5 }}
+                        animate={{ scale: 1.1, opacity: 1 }}
+                        transition={{ type: "timing", duration: 1200, loop: true }}
+                    >
+                        <Clock size={64} color="#7c3aed" />
+                    </MotiView>
+                    <Text style={styles.loadingText}>Waiting for others...</Text>
+                    <Text style={styles.loadingSubtext}>
+                        {answeredCount}/{totalPlayers} players answered
+                    </Text>
+                    {waitingFor.length > 0 && (
+                        <View style={styles.waitingPlayersContainer}>
+                            {waitingFor.map(p => (
+                                <View key={p.id} style={styles.waitingPlayerChip}>
+                                    <Text style={styles.waitingPlayerEmoji}>{p.avatar_emoji}</Text>
+                                    <Text style={styles.waitingPlayerName}>{p.name}</Text>
+                                </View>
+                            ))}
+                        </View>
+                    )}
+                    <ActivityIndicator size="large" color="#7c3aed" style={styles.spinner} />
+                    {isHost && answeredCount >= totalPlayers && (
+                        <Text style={styles.waitingAutoAdvance}>Advancing to next round...</Text>
+                    )}
                 </View>
             </SafeAreaView>
         );
@@ -322,7 +452,7 @@ export default function RoundScreen() {
                 )}
 
                 {/* Turn banner - only in local multiplayer */}
-                {!isMultiplayer && players.length > 1 && currentPlayer && currentPlayerId && phase !== "starting" && (
+                {!isOnline && players.length > 1 && currentPlayer && currentPlayerId && phase !== "starting" && (
                     <MotiView
                         from={{ opacity: 0, translateY: -10 }}
                         animate={{ opacity: 1, translateY: 0 }}
@@ -402,6 +532,7 @@ export default function RoundScreen() {
                                         selectedOption={selectedOption}
                                         isRevealing={phase === "revealing"}
                                         correctAnswer={currentQuestion.correctAnswer}
+                                        acceptableAnswers={currentQuestion.acceptableAnswers}
                                         accentColor={currentTheme.accent}
                                         questionType={currentRoundType}
                                         difficulty={playerDifficulty}
@@ -435,10 +566,10 @@ export default function RoundScreen() {
                                                 style={[styles.nextButton, { backgroundColor: currentTheme.accent, shadowColor: currentTheme.accent }]}
                                             >
                                                 <Text style={styles.nextButtonText}>
-                                                    {isMultiplayer
-                                                        ? (currentRound < settings.totalRounds ? "Next Question" : "See Results")
+                                                    {isOnline
+                                                        ? "Continue"
                                                         : (currentPlayerIndex < players.length - 1 ? "Next Player" :
-                                                            currentRound < settings.totalRounds ? "Next Question" : "See Results")}
+                                                            currentRound < settings.totalRounds ? "Next Round" : "See Results")}
                                                 </Text>
                                             </TouchableOpacity>
                                             {players.length > 1 && (
@@ -523,4 +654,10 @@ const styles = StyleSheet.create({
     retryButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
     backButton: { backgroundColor: '#1e293b', paddingHorizontal: 32, paddingVertical: 16, borderRadius: 12 },
     backButtonText: { color: '#94a3b8', fontSize: 16, fontWeight: 'bold' },
+    // Waiting for others styles
+    waitingPlayersContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 20, paddingHorizontal: 32 },
+    waitingPlayerChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(124,58,237,0.15)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(124,58,237,0.3)' },
+    waitingPlayerEmoji: { fontSize: 18 },
+    waitingPlayerName: { color: '#c4b5fd', fontSize: 14, fontWeight: '600' },
+    waitingAutoAdvance: { color: '#10b981', fontSize: 14, fontWeight: '600', marginTop: 16 },
 });

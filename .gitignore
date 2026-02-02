@@ -23,6 +23,9 @@ dist/
 # Debug/diagnostic scripts
 diagnose-gemini.mjs
 
+# Supabase CLI temp files
+supabase/.temp/
+
 # Debug logs
 npm-debug.log*
 yarn-debug.log*

@@ -34,14 +34,16 @@ interface GameContextType {
     currentPlayerId: string | null;
     // Game stats per player
     gameStats: Record<string, PlayerGameStats>;
+    // Game-wide subjects (host decides for everyone)
+    gameSubjects: string[];
     // Saved profile
     savedProfile: SavedProfile | null;
     savedPlayerStats: PlayerStats | null;
     // Narrator
     getNarratorComment: (isCorrect: boolean, streak: number, playerName: string) => string;
     // Methods
-    createGame: (hostName: string, avatar: string, interests: string, rounds: number, mode: string, narratorStyle?: NarratorStyle, age?: number) => Promise<string>;
-    createLocalGame: (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle?: NarratorStyle, age?: number, playerCount?: number, difficultyLevel?: number) => string;
+    createGame: (hostName: string, avatar: string, interests: string, rounds: number, mode: string, narratorStyle?: NarratorStyle, age?: number, subjects?: string[]) => Promise<string>;
+    createLocalGame: (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle?: NarratorStyle, age?: number, playerCount?: number, difficultyLevel?: number, subjects?: string[]) => string;
     addLocalPlayer: (name: string, avatar: string, interests: string, age?: number, difficultyLevel?: number) => string;
     removeLocalPlayer: (playerId: string) => void;
     joinGame: (code: string, playerName: string, avatar: string, interests: string, age?: number) => Promise<string>;
@@ -60,9 +62,13 @@ interface GameContextType {
     // Subject tracking
     getLastSubjectForPlayer: (playerId: string) => string | null;
     setSubjectForPlayer: (playerId: string, subject: string) => void;
-    // Subject pre-selection (players pick 6 subjects at onboarding)
+    // Subject pre-selection (kept for backward compat)
     getSelectedSubjectsForPlayer: (playerId: string) => string[];
     setSelectedSubjectsForPlayer: (playerId: string, subjects: string[]) => void;
+    // Online round sync
+    updateRoundSubject: (subject: string, roundNumber: number) => Promise<void>;
+    markPlayerAnswered: (playerId: string) => Promise<void>;
+    advanceToNextRound: (nextRound: number) => Promise<void>;
     // Profile persistence
     loadSavedProfile: () => Promise<void>;
     saveCurrentProfile: (name: string, avatar: string, interests: string[]) => Promise<void>;
@@ -162,6 +168,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [gameStats, setGameStats] = useState<Record<string, PlayerGameStats>>({});
     const [playerSubjects, setPlayerSubjects] = useState<Record<string, string>>({});
     const [playerSelectedSubjects, setPlayerSelectedSubjectsState] = useState<Record<string, string[]>>({});
+    const [gameSubjects, setGameSubjects] = useState<string[]>([]);
     const [savedProfile, setSavedProfile] = useState<SavedProfile | null>(null);
     const [savedPlayerStats, setSavedPlayerStats] = useState<PlayerStats | null>(null);
 
@@ -182,6 +189,13 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return updated;
         });
     }, [players]);
+
+    // Sync gameSubjects from game data (for online joiners)
+    useEffect(() => {
+        if (game?.subjects && game.subjects.length > 0) {
+            setGameSubjects(game.subjects);
+        }
+    }, [game?.subjects]);
 
     // Subscribe to real-time changes (only for multi-device / Supabase games)
     useEffect(() => {
@@ -319,12 +333,12 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             .map((player, index) => ({ ...player, rank: index + 1 }));
     };
 
-    const createGame = async (hostName: string, avatar: string, interests: string, rounds: number, mode: string, narratorStyle: NarratorStyle = "game_show", age: number = 30) => {
+    const createGame = async (hostName: string, avatar: string, interests: string, rounds: number, mode: string, narratorStyle: NarratorStyle = "game_show", age: number = 30, subjects: string[] = []) => {
         const code = Math.random().toString(36).substring(2, 6).toUpperCase();
 
         const { data: gameData, error: gameError } = await supabase
             .from('games')
-            .insert([{ code, status: 'lobby' }])
+            .insert([{ code, status: 'lobby', subjects }])
             .select()
             .single();
 
@@ -353,6 +367,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentPlayerId(playerData.id);
         setSettings({ totalRounds: rounds, mode: "different_devices", playerCount: 0, narratorStyle });
         setGameStats({ [playerData.id]: createDefaultStats() });
+        setGameSubjects(subjects);
 
         await PlayerStorage.saveProfile({
             name: hostName, avatar, interests: interests.split(", "),
@@ -388,6 +403,10 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPlayers(currentPlayers || []);
         setIsHost(false);
         setCurrentPlayerId(playerData.id);
+        // Load game-wide subjects from the game record
+        if (gameData.subjects && Array.isArray(gameData.subjects)) {
+            setGameSubjects(gameData.subjects);
+        }
 
         await PlayerStorage.saveProfile({
             name: playerName, avatar, interests: interests.split(", "),
@@ -416,10 +435,38 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const startGame = async () => {
         if (!game || !isHost) return;
-        await supabase.from('games').update({ status: 'playing' }).eq('id', game.id);
+        await supabase.from('games').update({ status: 'playing', current_round_number: 1, players_answered: [] }).eq('id', game.id);
     };
 
-    const createLocalGame = (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle: NarratorStyle = "game_show", age: number = 30, playerCount: number = 1, difficultyLevel: number = 5): string => {
+    // Online round sync methods
+    const updateRoundSubject = async (subject: string, roundNumber: number) => {
+        if (!game?.id || game.id === "local" || !isHost) return;
+        await supabase.from('games').update({
+            current_round_subject: subject,
+            current_round_number: roundNumber,
+            players_answered: [],
+        }).eq('id', game.id);
+    };
+
+    const markPlayerAnswered = async (playerId: string) => {
+        if (!game?.id || game.id === "local") return;
+        const currentAnswered = game.players_answered || [];
+        if (currentAnswered.includes(playerId)) return;
+        await supabase.from('games').update({
+            players_answered: [...currentAnswered, playerId],
+        }).eq('id', game.id);
+    };
+
+    const advanceToNextRound = async (nextRound: number) => {
+        if (!game?.id || game.id === "local" || !isHost) return;
+        await supabase.from('games').update({
+            current_round_number: nextRound,
+            current_round_subject: null,
+            players_answered: [],
+        }).eq('id', game.id);
+    };
+
+    const createLocalGame = (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle: NarratorStyle = "game_show", age: number = 30, playerCount: number = 1, difficultyLevel: number = 5, subjects: string[] = []): string => {
         const localId = `local_${Date.now()}`;
         const hostPlayer: PlayerData = {
             id: localId,
@@ -441,6 +488,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setGameStats({ [localId]: createDefaultStats(difficultyLevel) });
         setPlayerSubjects({});
         setPlayerSelectedSubjectsState({});
+        setGameSubjects(subjects);
 
         PlayerStorage.saveProfile({
             name: hostName, avatar, interests: interests.split(", "),
@@ -490,6 +538,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setGameStats({});
         setPlayerSubjects({});
         setPlayerSelectedSubjectsState({});
+        setGameSubjects([]);
     };
 
     const updateSettings = (newSettings: Partial<GameSettings>) => {
@@ -531,7 +580,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return (
         <GameContext.Provider value={{
             game, players, settings, isHost, currentPlayerId,
-            gameStats, savedProfile, savedPlayerStats,
+            gameStats, gameSubjects, savedProfile, savedPlayerStats,
             getNarratorComment,
             createGame, createLocalGame, addLocalPlayer, removeLocalPlayer,
             joinGame, leaveGame, kickPlayer,
@@ -539,6 +588,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             recordAnswer, getLeaderboard, getDifficultyForPlayer, setDifficultyForPlayer,
             getLastSubjectForPlayer, setSubjectForPlayer,
             getSelectedSubjectsForPlayer, setSelectedSubjectsForPlayer,
+            updateRoundSubject, markPlayerAnswered, advanceToNextRound,
             loadSavedProfile, saveCurrentProfile, finalizeGame,
         }}>
             {children}

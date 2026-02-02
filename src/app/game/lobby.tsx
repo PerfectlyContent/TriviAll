@@ -6,8 +6,7 @@ import { MotiView } from "moti";
 import { Users, Trash2, Play, Copy, ArrowLeft, Sparkles, UserPlus } from "lucide-react-native";
 import { GameHaptics } from "../../utils/sounds";
 import { DifficultySlider } from "../../components/ui/DifficultySlider";
-import { SUBJECTS, isPredefinedSubject } from "../../constants/subjects";
-import { CustomSubjectInput, CustomSubjectChip } from "../../components/ui/CustomSubjectInput";
+import { SUBJECTS } from "../../constants/subjects";
 import * as Clipboard from "expo-clipboard";
 
 const FUN_FACTS = [
@@ -23,7 +22,7 @@ const FUN_FACTS = [
 
 export default function LobbyScreen() {
     const router = useRouter();
-    const { players, kickPlayer, settings, game, isHost, startGame, startLocalGame, addLocalPlayer, removeLocalPlayer, updatePlayerStatus, currentPlayerId, gameStats, setSelectedSubjectsForPlayer } = useGame();
+    const { players, kickPlayer, settings, game, isHost, startGame, startLocalGame, addLocalPlayer, removeLocalPlayer, updatePlayerStatus, currentPlayerId, gameStats, gameSubjects } = useGame();
     const [isStarting, setIsStarting] = useState(false);
     const [codeCopied, setCodeCopied] = useState(false);
     const [funFact] = useState(FUN_FACTS[Math.floor(Math.random() * FUN_FACTS.length)]);
@@ -36,7 +35,6 @@ export default function LobbyScreen() {
     const [newPlayerAgeType, setNewPlayerAgeType] = useState<"adult" | "child">("adult");
     const [newPlayerChildAge, setNewPlayerChildAge] = useState("");
     const [newPlayerDifficulty, setNewPlayerDifficulty] = useState(5);
-    const [newPlayerSubjects, setNewPlayerSubjects] = useState<string[]>([]);
     const [addPlayerError, setAddPlayerError] = useState("");
     const ADD_PLAYER_EMOJIS = ["🐱", "🦊", "🐻", "🐨", "🐯", "🦁", "🐼", "🐵", "🐸", "🦉", "🦄", "🦖"];
 
@@ -74,34 +72,9 @@ export default function LobbyScreen() {
         }
     };
 
-    const newPlayerCustomSubjects = newPlayerSubjects.filter(s => !isPredefinedSubject(s));
-
-    const handleAddNewPlayerCustomSubject = (subject: string) => {
-        setNewPlayerSubjects(prev => {
-            if (prev.length >= 6) return prev;
-            if (prev.some(s => s.toLowerCase() === subject.toLowerCase())) return prev;
-            return [...prev, subject];
-        });
-    };
-
-    const handleRemoveNewPlayerCustomSubject = (subject: string) => {
-        GameHaptics.select();
-        setNewPlayerSubjects(prev => prev.filter(s => s !== subject));
-    };
-
-    const toggleNewPlayerSubject = (subjectName: string) => {
-        GameHaptics.select();
-        setNewPlayerSubjects(prev => {
-            if (prev.includes(subjectName)) return prev.filter(s => s !== subjectName);
-            if (prev.length >= 6) return prev;
-            return [...prev, subjectName];
-        });
-    };
-
     const isAddPlayerValid = () => {
         if (!newPlayerName.trim()) return false;
         if (newPlayerAgeType === "child" && !newPlayerChildAge.trim()) return false;
-        if (newPlayerSubjects.length < 3) return false;
         return true;
     };
 
@@ -115,19 +88,13 @@ export default function LobbyScreen() {
             setAddPlayerError("Please enter the child's age");
             return;
         }
-        if (newPlayerSubjects.length < 3) {
-            setAddPlayerError(`Pick at least 3 subjects (${newPlayerSubjects.length} selected)`);
-            return;
-        }
         const playerAge = newPlayerAgeType === "adult" ? 30 : parseInt(newPlayerChildAge) || 10;
-        const playerId = addLocalPlayer(newPlayerName.trim(), newPlayerEmoji, "General Knowledge", playerAge, newPlayerDifficulty);
-        setSelectedSubjectsForPlayer(playerId, newPlayerSubjects);
+        addLocalPlayer(newPlayerName.trim(), newPlayerEmoji, "General Knowledge", playerAge, newPlayerDifficulty);
         setNewPlayerName("");
         setNewPlayerEmoji(ADD_PLAYER_EMOJIS[Math.floor(Math.random() * ADD_PLAYER_EMOJIS.length)]);
         setNewPlayerAgeType("adult");
         setNewPlayerChildAge("");
         setNewPlayerDifficulty(5);
-        setNewPlayerSubjects([]);
         setAddPlayerError("");
         setShowAddPlayer(false);
         GameHaptics.correct();
@@ -193,6 +160,30 @@ export default function LobbyScreen() {
                         <Text style={styles.statValue}>{players.length}</Text>
                     </View>
                 </View>
+
+                {/* Game Subjects */}
+                {gameSubjects.length > 0 && (
+                    <View style={styles.subjectsRow}>
+                        <Text style={styles.subjectsLabel}>SUBJECTS</Text>
+                        <View style={styles.subjectsChips}>
+                            {gameSubjects.map((subjectName) => {
+                                const predefined = SUBJECTS.find(s => s.name === subjectName);
+                                return (
+                                    <View
+                                        key={subjectName}
+                                        style={[
+                                            styles.subjectChip,
+                                            predefined && { backgroundColor: `${predefined.color}18`, borderColor: `${predefined.color}55` },
+                                        ]}
+                                    >
+                                        {predefined && <Text style={styles.subjectChipIcon}>{predefined.icon}</Text>}
+                                        <Text style={[styles.subjectChipText, predefined && { color: predefined.color }]}>{subjectName}</Text>
+                                    </View>
+                                );
+                            })}
+                        </View>
+                    </View>
+                )}
 
                 {/* Player list */}
                 <ScrollView style={styles.playerList} contentContainerStyle={styles.playerListContent}>
@@ -282,46 +273,6 @@ export default function LobbyScreen() {
                                                 />
                                             </View>
                                         )}
-                                        {/* Subjects */}
-                                        <View style={styles.addPlayerDifficultyRow}>
-                                            <Text style={styles.addPlayerFieldLabel}>Subjects ({newPlayerSubjects.length}/6, min 3)</Text>
-                                            <View style={styles.addPlayerSubjectGrid}>
-                                                {SUBJECTS.filter(s => s.name !== "General Knowledge").map((subject) => {
-                                                    const isSelected = newPlayerSubjects.includes(subject.name);
-                                                    const isFull = newPlayerSubjects.length >= 6 && !isSelected;
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={subject.name}
-                                                            onPress={() => toggleNewPlayerSubject(subject.name)}
-                                                            disabled={isFull}
-                                                            activeOpacity={0.7}
-                                                            style={[
-                                                                styles.addPlayerSubjectChip,
-                                                                isSelected && { backgroundColor: `${subject.color}22`, borderColor: `${subject.color}88` },
-                                                                isFull && { opacity: 0.35 },
-                                                            ]}
-                                                        >
-                                                            <Text style={styles.addPlayerSubjectIcon}>{subject.icon}</Text>
-                                                            <Text style={[styles.addPlayerSubjectText, isSelected && { color: subject.color }]}>{subject.name}</Text>
-                                                        </TouchableOpacity>
-                                                    );
-                                                })}
-                                            </View>
-                                            {/* Custom subjects */}
-                                            {newPlayerCustomSubjects.length > 0 && (
-                                                <View style={styles.addPlayerCustomChipsRow}>
-                                                    {newPlayerCustomSubjects.map(s => (
-                                                        <CustomSubjectChip key={s} label={s} onRemove={() => handleRemoveNewPlayerCustomSubject(s)} compact />
-                                                    ))}
-                                                </View>
-                                            )}
-                                            <CustomSubjectInput
-                                                onAdd={handleAddNewPlayerCustomSubject}
-                                                existingSubjects={newPlayerSubjects}
-                                                maxReached={newPlayerSubjects.length >= 6}
-                                                compact
-                                            />
-                                        </View>
                                         {/* Difficulty */}
                                         <View style={styles.addPlayerDifficultyRow}>
                                             <Text style={styles.addPlayerFieldLabel}>Difficulty</Text>
@@ -438,6 +389,16 @@ const styles = StyleSheet.create({
     statLabel: { color: '#64748b', fontSize: 9, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 4 },
     statValue: { color: 'white', fontWeight: '600', fontSize: 14 },
     statDivider: { width: 1, height: 32, backgroundColor: '#1e293b' },
+    subjectsRow: { marginBottom: 16 },
+    subjectsLabel: { color: '#64748b', fontSize: 9, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 8 },
+    subjectsChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+    subjectChip: {
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10,
+        backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155',
+    },
+    subjectChipIcon: { fontSize: 12 },
+    subjectChipText: { color: '#94a3b8', fontSize: 12, fontWeight: '600' },
     playerList: { flex: 1, marginBottom: 16 },
     playerListContent: { paddingBottom: 16 },
     playersContainer: { gap: 12 },
@@ -512,15 +473,6 @@ const styles = StyleSheet.create({
     ageToggleTextSelected: { color: 'white' },
     addPlayerDifficultyRow: { marginTop: 12 },
     addPlayerFieldLabel: { color: '#94a3b8', fontSize: 13, fontWeight: '600', marginBottom: 8 },
-    addPlayerSubjectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    addPlayerSubjectChip: {
-        flexDirection: 'row', alignItems: 'center', gap: 6,
-        paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
-        backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155',
-    },
-    addPlayerSubjectIcon: { fontSize: 14 },
-    addPlayerSubjectText: { color: '#94a3b8', fontSize: 12, fontWeight: '600' },
-    addPlayerCustomChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8, marginBottom: 8 },
     addPlayerError: { color: '#ef4444', fontSize: 13, fontWeight: '600', marginTop: 8, textAlign: 'center' },
     addPlayerActions: { flexDirection: 'row', gap: 10, marginTop: 12 },
     addPlayerCancel: {

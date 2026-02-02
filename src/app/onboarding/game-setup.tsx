@@ -68,25 +68,33 @@ export default function GameSetupScreen() {
         setSelectedSubjects(prev => prev.filter(s => s !== subject));
     };
 
+    const [allSubjectsMode, setAllSubjectsMode] = useState(false);
+
+    const effectiveSubjects = allSubjectsMode
+        ? SUBJECTS.filter(s => s.name !== "General Knowledge").map(s => s.name)
+        : selectedSubjects;
+
+    const handleToggleAllSubjects = () => {
+        GameHaptics.select();
+        setAllSubjectsMode(prev => !prev);
+    };
+
     const handleStartGame = async () => {
         if (!hostName.trim()) return;
         if (ageType === "child" && !childAge.trim()) return;
-        if (selectedSubjects.length < 3) return;
+        if (!allSubjectsMode && selectedSubjects.length < 3) return;
         setLoading(true);
         try {
             const playerAge = ageType === "adult" ? 30 : parseInt(childAge) || 10;
 
             if (playerCount === 1) {
-                const hostId = createLocalGame(hostName, selectedEmoji, "General Knowledge", rounds, narratorStyle, playerAge, 1, difficultyLevel);
-                setSelectedSubjectsForPlayer(hostId, selectedSubjects);
+                createLocalGame(hostName, selectedEmoji, "General Knowledge", rounds, narratorStyle, playerAge, 1, difficultyLevel, effectiveSubjects);
                 router.push("/game/round");
             } else if (deviceMode === "same_device") {
-                const hostId = createLocalGame(hostName, selectedEmoji, "General Knowledge", rounds, narratorStyle, playerAge, playerCount, difficultyLevel);
-                setSelectedSubjectsForPlayer(hostId, selectedSubjects);
+                createLocalGame(hostName, selectedEmoji, "General Knowledge", rounds, narratorStyle, playerAge, playerCount, difficultyLevel, effectiveSubjects);
                 router.push("/game/lobby");
             } else {
-                await createGame(hostName, selectedEmoji, "General Knowledge", rounds, "different_devices", narratorStyle, playerAge);
-                // For online games, currentPlayerId is set by createGame; store subjects after navigation
+                await createGame(hostName, selectedEmoji, "General Knowledge", rounds, "different_devices", narratorStyle, playerAge, effectiveSubjects);
                 router.push("/game/lobby");
             }
         } catch (err: any) {
@@ -198,49 +206,70 @@ export default function GameSetupScreen() {
 
                 {/* Subject Selection */}
                 <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Pick your Subjects</Text>
+                    <Text style={styles.sectionTitle}>Game Subjects</Text>
                     <Text style={styles.sectionSubtitle}>
-                        Choose 3-6 subjects you'd like to be quizzed on ({selectedSubjects.length}/6)
+                        {playerCount > 1 ? "Choose subjects for all players" : "Choose subjects you'd like to be quizzed on"}
                     </Text>
-                    <View style={styles.subjectGrid}>
-                        {SUBJECTS.filter(s => s.name !== "General Knowledge").map((subject) => {
-                            const isSelected = selectedSubjects.includes(subject.name);
-                            const isFull = selectedSubjects.length >= 6 && !isSelected;
-                            return (
-                                <TouchableOpacity
-                                    key={subject.name}
-                                    onPress={() => toggleSubject(subject.name)}
-                                    disabled={isFull}
-                                    activeOpacity={0.7}
-                                    style={[
-                                        styles.subjectChip,
-                                        isSelected && { backgroundColor: `${subject.color}22`, borderColor: `${subject.color}88` },
-                                        isFull && { opacity: 0.35 },
-                                    ]}
-                                >
-                                    <Text style={styles.subjectChipIcon}>{subject.icon}</Text>
-                                    <Text style={[styles.subjectChipText, isSelected && { color: subject.color }]}>{subject.name}</Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </View>
+                    <TouchableOpacity
+                        onPress={handleToggleAllSubjects}
+                        activeOpacity={0.7}
+                        style={[styles.allSubjectsToggle, allSubjectsMode && styles.allSubjectsToggleActive]}
+                    >
+                        <Text style={styles.allSubjectsEmoji}>🌍</Text>
+                        <View style={{ flex: 1 }}>
+                            <Text style={[styles.allSubjectsText, allSubjectsMode && styles.allSubjectsTextActive]}>All Subjects</Text>
+                            <Text style={styles.allSubjectsDesc}>Random mix from every category</Text>
+                        </View>
+                        {allSubjectsMode && <CheckCircle2 size={22} color="#10b981" />}
+                    </TouchableOpacity>
+                    {!allSubjectsMode && (
+                        <Text style={[styles.sectionSubtitle, { marginTop: 16, marginBottom: 12 }]}>
+                            Or pick 3-6 specific subjects ({selectedSubjects.length}/6)
+                        </Text>
+                    )}
+                    {!allSubjectsMode && (
+                        <View style={styles.subjectGrid}>
+                            {SUBJECTS.filter(s => s.name !== "General Knowledge").map((subject) => {
+                                const isSelected = selectedSubjects.includes(subject.name);
+                                const isFull = selectedSubjects.length >= 6 && !isSelected;
+                                return (
+                                    <TouchableOpacity
+                                        key={subject.name}
+                                        onPress={() => toggleSubject(subject.name)}
+                                        disabled={isFull}
+                                        activeOpacity={0.7}
+                                        style={[
+                                            styles.subjectChip,
+                                            isSelected && { backgroundColor: `${subject.color}22`, borderColor: `${subject.color}88` },
+                                            isFull && { opacity: 0.35 },
+                                        ]}
+                                    >
+                                        <Text style={styles.subjectChipIcon}>{subject.icon}</Text>
+                                        <Text style={[styles.subjectChipText, isSelected && { color: subject.color }]}>{subject.name}</Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+                    )}
 
                     {/* Custom subjects */}
-                    <View style={styles.customSection}>
-                        <Text style={styles.customLabel}>Or add your own:</Text>
-                        {customSubjects.length > 0 && (
-                            <View style={styles.customChipsRow}>
-                                {customSubjects.map(s => (
-                                    <CustomSubjectChip key={s} label={s} onRemove={() => handleRemoveCustomSubject(s)} />
-                                ))}
-                            </View>
-                        )}
-                        <CustomSubjectInput
-                            onAdd={handleAddCustomSubject}
-                            existingSubjects={selectedSubjects}
-                            maxReached={selectedSubjects.length >= 6}
-                        />
-                    </View>
+                    {!allSubjectsMode && (
+                        <View style={styles.customSection}>
+                            <Text style={styles.customLabel}>Or add your own:</Text>
+                            {customSubjects.length > 0 && (
+                                <View style={styles.customChipsRow}>
+                                    {customSubjects.map(s => (
+                                        <CustomSubjectChip key={s} label={s} onRemove={() => handleRemoveCustomSubject(s)} />
+                                    ))}
+                                </View>
+                            )}
+                            <CustomSubjectInput
+                                onAdd={handleAddCustomSubject}
+                                existingSubjects={selectedSubjects}
+                                maxReached={selectedSubjects.length >= 6}
+                            />
+                        </View>
+                    )}
                 </View>
 
                 {/* Rounds */}
@@ -362,8 +391,8 @@ export default function GameSetupScreen() {
                 <View style={styles.actions}>
                     <TouchableOpacity
                         onPress={handleStartGame}
-                        disabled={!hostName.trim() || loading || selectedSubjects.length < 3}
-                        style={[styles.startButton, (!hostName.trim() || loading || selectedSubjects.length < 3) && styles.buttonDisabled]}
+                        disabled={!hostName.trim() || loading || (!allSubjectsMode && selectedSubjects.length < 3)}
+                        style={[styles.startButton, (!hostName.trim() || loading || (!allSubjectsMode && selectedSubjects.length < 3)) && styles.buttonDisabled]}
                     >
                         {loading ? (
                             <ActivityIndicator color="white" />
@@ -469,6 +498,19 @@ const styles = StyleSheet.create({
     ageTypeText: { color: '#94a3b8', fontSize: 16, fontWeight: '600' },
     ageTypeTextSelected: { color: 'white' },
     ageInputLabel: { color: '#94a3b8', fontSize: 16, marginRight: 12 },
+    // All Subjects Toggle
+    allSubjectsToggle: {
+        flexDirection: 'row', alignItems: 'center', gap: 12,
+        padding: 16, borderRadius: 16, borderWidth: 2, borderColor: '#1e293b',
+        backgroundColor: '#0f172a', marginBottom: 4,
+    },
+    allSubjectsToggleActive: {
+        backgroundColor: 'rgba(16, 185, 129, 0.1)', borderColor: '#10b981',
+    },
+    allSubjectsEmoji: { fontSize: 28 },
+    allSubjectsText: { color: '#94a3b8', fontSize: 16, fontWeight: 'bold' },
+    allSubjectsTextActive: { color: 'white' },
+    allSubjectsDesc: { color: '#64748b', fontSize: 13, marginTop: 2 },
     // Subject Selection
     customSection: { marginTop: 16 },
     customLabel: { color: '#94a3b8', fontSize: 13, fontWeight: '600', marginBottom: 10 },

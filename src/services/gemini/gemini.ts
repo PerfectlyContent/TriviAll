@@ -39,10 +39,11 @@ const SYSTEM_PROMPT = `You are a trivia engine for "TriviAll".
 Generate exactly ONE trivia question in JSON format.
 The JSON must follow this EXACT schema:
 {
-  "type": "multiple_choice" | "true_false" | "complete_phrase" | "lightning_round" | "estimation",
+  "type": "multiple_choice" | "true_false" | "complete_phrase" | "estimation",
   "question": "string",
-  "options": ["string", "..."], 
+  "options": ["string", "..."],
   "correctAnswer": "string",
+  "acceptableAnswers": ["string", "..."],
   "explanation": "string",
   "topic": "string"
 }
@@ -50,8 +51,9 @@ The JSON must follow this EXACT schema:
 CRITICAL RULES:
 1. "options" is REQUIRED for multiple_choice (must have 4 options) AND true_false (must be exactly ["True", "False"]).
 2. "correctAnswer" must be one of the strings in "options" for multiple_choice and true_false.
-3. For complete_phrase, "options" can be empty.
-4. For estimation, the answer should be a number (as a string).`;
+3. For complete_phrase, "options" MUST be an empty array []. The player will type their answer. Include "acceptableAnswers" with 2-5 acceptable variations/spellings of the answer.
+4. For estimation, "options" MUST be an empty array []. The answer should be a number (as a string). Include "acceptableAnswers" with reasonable close values.
+5. "acceptableAnswers" is optional for multiple_choice and true_false but REQUIRED for complete_phrase and estimation.`;
 
 async function tryGenerateWithModel(modelName: string, prompt: string, player: Player): Promise<Question> {
   const model = genAI.getGenerativeModel({

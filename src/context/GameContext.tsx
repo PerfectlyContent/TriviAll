@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { supabase, GameData, PlayerData } from "../services/supabase";
-import { PlayerStorage, SavedProfile, PlayerStats } from "../utils/storage";
+import { PlayerStorage, SavedProfile, PlayerStats, ActiveSession } from "../utils/storage";
 
 export type NarratorStyle = "game_show" | "sarcastic" | "encouraging";
 
@@ -74,6 +74,10 @@ interface GameContextType {
     broadcastQuestion: (question: any) => Promise<void>;
     submitTurnAnswer: (answer: string, isCorrect: boolean) => Promise<void>;
     advanceToNextTurn: () => Promise<void>;
+    // Session & rejoin
+    rejoinGame: () => Promise<boolean>;
+    hasActiveSession: () => Promise<boolean>;
+    clearSession: () => Promise<void>;
     // Profile persistence
     loadSavedProfile: () => Promise<void>;
     saveCurrentProfile: (name: string, avatar: string, interests: string[]) => Promise<void>;
@@ -212,7 +216,9 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 'postgres_changes',
                 { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${game.id}` },
                 (payload) => {
-                    setGame(payload.new as GameData);
+                    const newGame = payload.new as GameData;
+                    console.log(`[REALTIME] Game update: phase=${newGame.current_turn_phase}, turn=${newGame.current_turn_player_id?.slice(-4)}, round=${newGame.current_round_number}, status=${newGame.status}`);
+                    setGame(newGame);
                 }
             )
             .subscribe();
@@ -379,6 +385,17 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             lastPlayed: new Date().toISOString(),
         });
 
+        // Persist session for rejoin
+        await PlayerStorage.saveActiveSession({
+            gameId: gameData.id,
+            playerId: playerData.id,
+            gameCode: code,
+            isHost: true,
+            totalRounds: rounds,
+            narratorStyle,
+            savedAt: new Date().toISOString(),
+        });
+
         return code;
     };
 
@@ -416,6 +433,17 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await PlayerStorage.saveProfile({
             name: playerName, avatar, interests: interests.split(", "),
             lastPlayed: new Date().toISOString(),
+        });
+
+        // Persist session for rejoin
+        await PlayerStorage.saveActiveSession({
+            gameId: gameData.id,
+            playerId: playerData.id,
+            gameCode: code.toUpperCase(),
+            isHost: false,
+            totalRounds: settings.totalRounds,
+            narratorStyle: settings.narratorStyle,
+            savedAt: new Date().toISOString(),
         });
 
         return playerData.id;
@@ -493,6 +521,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Turn-based online multiplayer methods
     const startPlayerTurn = async (playerId: string) => {
         if (!game?.id || game.id === "local") return;
+        console.log(`[GAME] startPlayerTurn: ${playerId}`);
         await supabase.from('games').update({
             current_turn_player_id: playerId,
             current_turn_phase: 'question',
@@ -504,6 +533,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const broadcastQuestion = async (question: any) => {
         if (!game?.id || game.id === "local") return;
+        console.log(`[GAME] broadcastQuestion: topic=${question?.topic}`);
         await supabase.from('games').update({
             current_turn_question: question,
         }).eq('id', game.id);
@@ -511,6 +541,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const submitTurnAnswer = async (answer: string, isCorrect: boolean) => {
         if (!game?.id || game.id === "local") return;
+        console.log(`[GAME] submitTurnAnswer: answer="${answer}", correct=${isCorrect}`);
         await supabase.from('games').update({
             current_turn_answer: answer,
             current_turn_correct: isCorrect,
@@ -535,6 +566,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         const nextPlayer = sortedPlayers.find(p => !updatedAnswered.includes(p.id));
 
+        console.log(`[GAME] advanceToNextTurn: answered=${updatedAnswered.length}/${players.length}, nextPlayer=${nextPlayer?.name || 'NONE'}`);
+
         if (nextPlayer) {
             // Start next player's turn
             await supabase.from('games').update({
@@ -550,6 +583,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const nextRound = (game.current_round_number || 1) + 1;
             if (nextRound > settings.totalRounds) {
                 // Game over
+                console.log(`[GAME] All rounds done! Game finished.`);
                 await supabase.from('games').update({
                     status: 'finished' as const,
                     players_answered: updatedAnswered,
@@ -561,6 +595,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }).eq('id', game.id);
             } else {
                 // Advance to next round
+                console.log(`[GAME] Advancing to round ${nextRound}`);
                 await supabase.from('games').update({
                     current_round_number: nextRound,
                     current_round_subject: null,
@@ -573,6 +608,84 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }).eq('id', game.id);
             }
         }
+    };
+
+    // ===== Rejoin / Session persistence =====
+    const hasActiveSession = async (): Promise<boolean> => {
+        const session = await PlayerStorage.loadActiveSession();
+        return session !== null;
+    };
+
+    const clearSession = async (): Promise<void> => {
+        await PlayerStorage.clearActiveSession();
+    };
+
+    const rejoinGame = async (): Promise<boolean> => {
+        const session = await PlayerStorage.loadActiveSession();
+        if (!session) {
+            console.log(`[REJOIN] No active session found`);
+            return false;
+        }
+
+        console.log(`[REJOIN] Found session: game=${session.gameId}, player=${session.playerId}`);
+
+        // Fetch the game
+        const { data: gameData, error: gameError } = await supabase
+            .from('games').select('*').eq('id', session.gameId).single();
+
+        if (gameError || !gameData) {
+            console.log(`[REJOIN] Game not found, clearing session`);
+            await PlayerStorage.clearActiveSession();
+            return false;
+        }
+
+        // If game is finished, clear session
+        if (gameData.status === 'finished') {
+            console.log(`[REJOIN] Game already finished, clearing session`);
+            await PlayerStorage.clearActiveSession();
+            return false;
+        }
+
+        // Verify our player still exists in the game
+        const { data: playerData, error: playerError } = await supabase
+            .from('players').select('*').eq('id', session.playerId).single();
+
+        if (playerError || !playerData) {
+            console.log(`[REJOIN] Player not found in game, clearing session`);
+            await PlayerStorage.clearActiveSession();
+            return false;
+        }
+
+        // Fetch all players
+        const { data: allPlayers } = await supabase
+            .from('players').select('*').eq('game_id', session.gameId).order('joined_at', { ascending: true });
+
+        // Restore state
+        setGame(gameData);
+        setPlayers(allPlayers || []);
+        setIsHost(session.isHost);
+        setCurrentPlayerId(session.playerId);
+        setSettings(prev => ({
+            ...prev,
+            totalRounds: session.totalRounds,
+            mode: "different_devices",
+            narratorStyle: (session.narratorStyle as NarratorStyle) || "game_show",
+        }));
+
+        // Restore subjects
+        if (gameData.subjects && Array.isArray(gameData.subjects)) {
+            setGameSubjects(gameData.subjects);
+        }
+
+        // Initialize stats for all players
+        const statsInit: Record<string, PlayerGameStats> = {};
+        for (const p of (allPlayers || [])) {
+            statsInit[p.id] = createDefaultStats();
+        }
+        setGameStats(prev => ({ ...statsInit, ...prev }));
+
+        console.log(`[REJOIN] ✅ Successfully rejoined game ${session.gameCode} as ${playerData.name} (${session.isHost ? 'host' : 'player'})`);
+        return true;
     };
 
     const createLocalGame = (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle: NarratorStyle = "game_show", age: number = 30, playerCount: number = 1, difficultyLevel: number = 5, subjects: string[] = []): string => {
@@ -648,6 +761,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPlayerSubjects({});
         setPlayerSelectedSubjectsState({});
         setGameSubjects([]);
+        // Clear persisted session
+        PlayerStorage.clearActiveSession();
     };
 
     const updateSettings = (newSettings: Partial<GameSettings>) => {
@@ -699,6 +814,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             getSelectedSubjectsForPlayer, setSelectedSubjectsForPlayer,
             updateRoundSubject, markPlayerAnswered, advanceToNextRound,
             startPlayerTurn, broadcastQuestion, submitTurnAnswer, advanceToNextTurn,
+            rejoinGame, hasActiveSession, clearSession,
             loadSavedProfile, saveCurrentProfile, finalizeGame,
         }}>
             {children}

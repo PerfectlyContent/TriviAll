@@ -3,7 +3,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const KEYS = {
     PLAYER_PROFILE: 'triviall_player_profile',
     PLAYER_STATS: 'triviall_player_stats',
+    ACTIVE_SESSION: 'triviall_active_session',
 };
+
+export interface ActiveSession {
+    gameId: string;
+    playerId: string;
+    gameCode: string;
+    isHost: boolean;
+    totalRounds: number;
+    narratorStyle: string;
+    savedAt: string;
+}
 
 export interface SavedProfile {
     name: string;
@@ -96,10 +107,47 @@ export const PlayerStorage = {
         return updated;
     },
 
+    // Active game session persistence (for rejoin after closing)
+    saveActiveSession: async (session: ActiveSession): Promise<void> => {
+        try {
+            await AsyncStorage.setItem(KEYS.ACTIVE_SESSION, JSON.stringify(session));
+            console.log(`[STORAGE] Saved active session: game=${session.gameId}, player=${session.playerId}`);
+        } catch (e) {
+            console.warn('Failed to save active session:', e);
+        }
+    },
+
+    loadActiveSession: async (): Promise<ActiveSession | null> => {
+        try {
+            const data = await AsyncStorage.getItem(KEYS.ACTIVE_SESSION);
+            if (!data) return null;
+            const session = JSON.parse(data) as ActiveSession;
+            // Expire sessions older than 2 hours
+            const savedAt = new Date(session.savedAt).getTime();
+            if (Date.now() - savedAt > 2 * 60 * 60 * 1000) {
+                await AsyncStorage.removeItem(KEYS.ACTIVE_SESSION);
+                return null;
+            }
+            return session;
+        } catch (e) {
+            console.warn('Failed to load active session:', e);
+            return null;
+        }
+    },
+
+    clearActiveSession: async (): Promise<void> => {
+        try {
+            await AsyncStorage.removeItem(KEYS.ACTIVE_SESSION);
+            console.log(`[STORAGE] Cleared active session`);
+        } catch (e) {
+            console.warn('Failed to clear active session:', e);
+        }
+    },
+
     // Clear all stored data
     clearAll: async (): Promise<void> => {
         try {
-            await AsyncStorage.multiRemove([KEYS.PLAYER_PROFILE, KEYS.PLAYER_STATS]);
+            await AsyncStorage.multiRemove([KEYS.PLAYER_PROFILE, KEYS.PLAYER_STATS, KEYS.ACTIVE_SESSION]);
         } catch (e) {
             console.warn('Failed to clear storage:', e);
         }

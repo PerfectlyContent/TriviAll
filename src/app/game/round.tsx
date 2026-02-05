@@ -56,6 +56,9 @@ export default function RoundScreen() {
     const questionStartTime = useRef<number>(0);
     const hasGeneratedForRound = useRef<number>(0);
     const hasRecordedSpectatorAnswer = useRef<string | null>(null);
+    // Track the last turn we processed to avoid re-triggering effects
+    const lastProcessedTurnId = useRef<string | null>(null);
+    const lastProcessedTurnPhase = useRef<string | null>(null);
 
     // Mode detection
     const isOnline = settings.mode === "different_devices";
@@ -113,30 +116,55 @@ export default function RoundScreen() {
             setRoundSubject(subject);
             updateRoundSubject(subject, currentRound);
             hasGeneratedForRound.current = currentRound;
+            console.log(`[ROUND] 🎲 Host set subject="${subject}" for round ${currentRound}`);
+
+            // If no active turn player (new round), host starts the first player's turn
+            if (!game.current_turn_player_id) {
+                const sortedPlayers = [...players].sort((a, b) =>
+                    a.joined_at.localeCompare(b.joined_at)
+                );
+                const firstPlayer = sortedPlayers[0];
+                if (firstPlayer) {
+                    console.log(`[ROUND] 🎯 Host starting first turn for ${firstPlayer.name} in round ${currentRound}`);
+                    // Pre-mark this turn so "detect my turn" doesn't double-fire
+                    const turnKey = `${firstPlayer.id}_${currentRound}`;
+                    if (firstPlayer.id === currentPlayerId) {
+                        lastProcessedTurnId.current = turnKey;
+                        lastProcessedTurnPhase.current = 'question';
+                    }
+                    startPlayerTurn(firstPlayer.id);
+                }
+            }
         }
-    }, [isOnline, isHost, game, phase, currentRound, pickRandomSubject]);
+    }, [isOnline, isHost, game, phase, currentRound, pickRandomSubject, players]);
 
     // Non-host: watch for the host's subject broadcast
     useEffect(() => {
         if (!isOnline || isHost || !game) return;
 
-        if (game.current_round_subject && game.current_round_number === currentRound && phase === "starting") {
+        if (game.current_round_subject && game.current_round_number === currentRound) {
             setRoundSubject(game.current_round_subject);
+            console.log(`[ROUND] 📡 Non-host received subject="${game.current_round_subject}" for round ${currentRound}`);
         }
-    }, [isOnline, isHost, game?.current_round_subject, game?.current_round_number, currentRound, phase]);
+    }, [isOnline, isHost, game?.current_round_subject, game?.current_round_number, currentRound]);
 
     // ===== ONLINE: Spectator syncs phase from game state =====
     useEffect(() => {
-        if (!isOnline || !game || isMyTurn) return;
+        if (!isOnline || !game) return;
 
-        // Game finished
+        // Game finished — both active player and spectator should navigate
         if (game.status === "finished") {
+            console.log(`[ROUND] 🏁 Game finished, navigating to results`);
             router.push("/game/results");
             return;
         }
 
+        // Skip if it's my turn — the "detect my turn" effect handles that
+        if (isMyTurn) return;
+
         // Round advanced
         if (game.current_round_number > currentRound) {
+            console.log(`[ROUND] 📊 Round advanced: ${currentRound} → ${game.current_round_number}`);
             setCurrentRound(game.current_round_number);
             setPhase("starting");
             setSelectedOption(undefined);
@@ -146,51 +174,81 @@ export default function RoundScreen() {
             setRoundSubject(null);
             setNarratorComment("");
             hasRecordedSpectatorAnswer.current = null;
+            lastProcessedTurnId.current = null;
+            lastProcessedTurnPhase.current = null;
             return;
         }
 
-        // Sync spectator's view from the game's turn state
-        if (game.current_turn_phase === 'question') {
-            if (game.current_turn_question) {
-                setCurrentQuestion(game.current_turn_question as Question);
-                setPhase("question");
-                setSelectedOption(undefined);
-                setNarratorComment("");
-                hasRecordedSpectatorAnswer.current = null;
-            } else {
-                setPhase("generating");
-                setCurrentQuestion(null);
-            }
-        } else if (game.current_turn_phase === 'revealing') {
-            if (game.current_turn_question) {
-                setCurrentQuestion(game.current_turn_question as Question);
-            }
-            setSelectedOption(game.current_turn_answer || undefined);
-            setPhase("revealing");
+        // Build a key for the current turn state to avoid re-processing
+        const turnKey = `${game.current_turn_player_id}_${game.current_round_number}`;
+        const turnPhase = game.current_turn_phase;
 
-            // Record the active player's answer in local stats (once)
-            const turnPlayerId = game.current_turn_player_id;
-            if (turnPlayerId && hasRecordedSpectatorAnswer.current !== turnPlayerId) {
-                hasRecordedSpectatorAnswer.current = turnPlayerId;
-                const isCorrect = game.current_turn_correct ?? false;
-                recordAnswer(
-                    turnPlayerId,
-                    isCorrect,
-                    (game.current_turn_question as Question)?.topic || "General"
-                );
-                // Show narrator comment for spectator
-                const turnPlayer = players.find(p => p.id === turnPlayerId);
-                const streak = isCorrect ? (gameStats[turnPlayerId]?.streak || 0) : 0;
-                const comment = getNarratorComment(isCorrect, streak, turnPlayer?.name || "Player");
-                setNarratorComment(comment);
-                if (isCorrect) {
-                    setShowConfetti(true);
-                    setTimeout(() => setShowConfetti(false), 2000);
+        // Sync spectator's view from the game's turn state
+        if (turnPhase === 'question') {
+            if (game.current_turn_question) {
+                // Only reset state when this is a NEW turn for the spectator
+                if (lastProcessedTurnId.current !== turnKey || lastProcessedTurnPhase.current !== 'question') {
+                    console.log(`[ROUND] 👁 Spectator: new question from ${game.current_turn_player_id}`);
+                    lastProcessedTurnId.current = turnKey;
+                    lastProcessedTurnPhase.current = 'question';
+                    setCurrentQuestion(game.current_turn_question as Question);
+                    setPhase("question");
+                    setSelectedOption(undefined);
+                    setNarratorComment("");
+                    hasRecordedSpectatorAnswer.current = null;
+                }
+            } else {
+                // Question not yet broadcast — show generating
+                if (lastProcessedTurnId.current !== turnKey || lastProcessedTurnPhase.current !== 'generating') {
+                    lastProcessedTurnId.current = turnKey;
+                    lastProcessedTurnPhase.current = 'generating';
+                    setPhase("generating");
+                    setCurrentQuestion(null);
+                    setSelectedOption(undefined);
+                    hasRecordedSpectatorAnswer.current = null;
                 }
             }
-        } else if (game.current_turn_phase === null && game.current_turn_player_id === null) {
-            // Between rounds — show starting
-            setPhase("starting");
+        } else if (turnPhase === 'revealing') {
+            if (lastProcessedTurnPhase.current !== 'revealing' || lastProcessedTurnId.current !== turnKey) {
+                console.log(`[ROUND] 👁 Spectator: revealing answer from ${game.current_turn_player_id}`);
+                lastProcessedTurnId.current = turnKey;
+                lastProcessedTurnPhase.current = 'revealing';
+
+                if (game.current_turn_question) {
+                    setCurrentQuestion(game.current_turn_question as Question);
+                }
+                setSelectedOption(game.current_turn_answer || undefined);
+                setPhase("revealing");
+
+                // Record the active player's answer in local stats (once)
+                const turnPlayerId = game.current_turn_player_id;
+                if (turnPlayerId && hasRecordedSpectatorAnswer.current !== turnPlayerId) {
+                    hasRecordedSpectatorAnswer.current = turnPlayerId;
+                    const isCorrect = game.current_turn_correct ?? false;
+                    recordAnswer(
+                        turnPlayerId,
+                        isCorrect,
+                        (game.current_turn_question as Question)?.topic || "General"
+                    );
+                    // Show narrator comment for spectator
+                    const turnPlayer = players.find(p => p.id === turnPlayerId);
+                    const streak = isCorrect ? (gameStats[turnPlayerId]?.streak || 0) : 0;
+                    const comment = getNarratorComment(isCorrect, streak, turnPlayer?.name || "Player");
+                    setNarratorComment(comment);
+                    if (isCorrect) {
+                        setShowConfetti(true);
+                        setTimeout(() => setShowConfetti(false), 2000);
+                    }
+                }
+            }
+        } else if (turnPhase === null && game.current_turn_player_id === null) {
+            // Between rounds — show starting (only if not already starting)
+            if (phase !== "starting") {
+                console.log(`[ROUND] 👁 Spectator: between rounds, setting to starting`);
+                setPhase("starting");
+                lastProcessedTurnId.current = null;
+                lastProcessedTurnPhase.current = null;
+            }
         }
     }, [
         isOnline, isMyTurn,
@@ -208,6 +266,15 @@ export default function RoundScreen() {
         if (!isOnline || !game) return;
 
         if (game.current_turn_player_id === currentPlayerId && game.current_turn_phase === 'question') {
+            // Only trigger when this is a NEW turn for me (not re-renders of existing state)
+            const turnKey = `${game.current_turn_player_id}_${game.current_round_number}`;
+            if (lastProcessedTurnId.current === turnKey) {
+                // Already processed this turn — skip
+                return;
+            }
+            lastProcessedTurnId.current = turnKey;
+            lastProcessedTurnPhase.current = 'question';
+            console.log(`[ROUND] 🎯 My turn detected! turnKey=${turnKey}`);
             // It's now my turn — reset local state and start countdown
             setPhase("starting");
             setSelectedOption(undefined);
@@ -217,15 +284,9 @@ export default function RoundScreen() {
             setNarratorComment("");
             hasRecordedSpectatorAnswer.current = null;
         }
-    }, [game?.current_turn_player_id, isOnline, currentPlayerId]);
+    }, [game?.current_turn_player_id, game?.current_turn_phase, game?.current_round_number, isOnline, currentPlayerId]);
 
-    // ===== ONLINE: Active player detects game finished =====
-    useEffect(() => {
-        if (!isOnline || !game) return;
-        if (game.status === "finished") {
-            router.push("/game/results");
-        }
-    }, [game?.status, isOnline]);
+    // (Game finished detection is handled in the spectator sync effect above for all players)
 
     // Generate a question for the current player with the round's subject
     const generateNextQuestion = async (subjectOverride?: string) => {
@@ -261,17 +322,25 @@ export default function RoundScreen() {
     useEffect(() => {
         if (phase === "starting") {
             // Online spectator: don't generate, just wait
-            if (isOnline && !isMyTurn) return;
+            if (isOnline && !isMyTurn) {
+                console.log(`[ROUND] ⏳ Spectator waiting during starting phase`);
+                return;
+            }
 
             // For online active player, wait for subject from host
             if (isOnline && isMyTurn && !roundSubject) {
                 // If I'm host, subject was already set. If not, wait for it.
-                if (!isHost && !roundSubject) return;
+                if (!isHost && !roundSubject) {
+                    console.log(`[ROUND] ⏳ Active player waiting for subject from host`);
+                    return;
+                }
             }
 
             // For same_device, pick subject on the fly
             const subjectForRound = isOnline ? roundSubject : pickRandomSubject();
             if (!isOnline) setRoundSubject(subjectForRound);
+
+            console.log(`[ROUND] ⏱ Starting countdown, subject="${subjectForRound}", isMyTurn=${isMyTurn}`);
 
             GameHaptics.countdown();
             const interval = setInterval(() => {
@@ -364,9 +433,13 @@ export default function RoundScreen() {
     const advanceToNext = () => {
         if (isOnline) {
             // Turn-based: active player advances to next turn
+            console.log(`[ROUND] ➡️ Advancing to next turn`);
             advanceToNextTurn();
             // Set local waiting state while DB updates
             setPhase("waiting");
+            // Clear the processed turn so the next turn detection works
+            lastProcessedTurnId.current = null;
+            lastProcessedTurnPhase.current = null;
         } else {
             // Same device: cycle through players, then advance round
             if (currentPlayerIndex < players.length - 1) {

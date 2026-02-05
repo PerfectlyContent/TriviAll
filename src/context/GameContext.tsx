@@ -69,6 +69,11 @@ interface GameContextType {
     updateRoundSubject: (subject: string, roundNumber: number) => Promise<void>;
     markPlayerAnswered: (playerId: string) => Promise<void>;
     advanceToNextRound: (nextRound: number) => Promise<void>;
+    // Turn-based online multiplayer
+    startPlayerTurn: (playerId: string) => Promise<void>;
+    broadcastQuestion: (question: any) => Promise<void>;
+    submitTurnAnswer: (answer: string, isCorrect: boolean) => Promise<void>;
+    advanceToNextTurn: () => Promise<void>;
     // Profile persistence
     loadSavedProfile: () => Promise<void>;
     saveCurrentProfile: (name: string, avatar: string, interests: string[]) => Promise<void>;
@@ -435,7 +440,21 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const startGame = async () => {
         if (!game || !isHost) return;
-        await supabase.from('games').update({ status: 'playing', current_round_number: 1, players_answered: [] }).eq('id', game.id);
+        // Sort players by join order for deterministic turn order
+        const sortedPlayers = [...players].sort((a, b) =>
+            a.joined_at.localeCompare(b.joined_at)
+        );
+        const firstPlayer = sortedPlayers[0];
+        await supabase.from('games').update({
+            status: 'playing',
+            current_round_number: 1,
+            players_answered: [],
+            current_turn_player_id: firstPlayer?.id || null,
+            current_turn_phase: firstPlayer ? 'question' : null,
+            current_turn_question: null,
+            current_turn_answer: null,
+            current_turn_correct: null,
+        }).eq('id', game.id);
     };
 
     // Online round sync methods
@@ -463,7 +482,97 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             current_round_number: nextRound,
             current_round_subject: null,
             players_answered: [],
+            current_turn_player_id: null,
+            current_turn_question: null,
+            current_turn_answer: null,
+            current_turn_correct: null,
+            current_turn_phase: null,
         }).eq('id', game.id);
+    };
+
+    // Turn-based online multiplayer methods
+    const startPlayerTurn = async (playerId: string) => {
+        if (!game?.id || game.id === "local") return;
+        await supabase.from('games').update({
+            current_turn_player_id: playerId,
+            current_turn_phase: 'question',
+            current_turn_question: null,
+            current_turn_answer: null,
+            current_turn_correct: null,
+        }).eq('id', game.id);
+    };
+
+    const broadcastQuestion = async (question: any) => {
+        if (!game?.id || game.id === "local") return;
+        await supabase.from('games').update({
+            current_turn_question: question,
+        }).eq('id', game.id);
+    };
+
+    const submitTurnAnswer = async (answer: string, isCorrect: boolean) => {
+        if (!game?.id || game.id === "local") return;
+        await supabase.from('games').update({
+            current_turn_answer: answer,
+            current_turn_correct: isCorrect,
+            current_turn_phase: 'revealing',
+        }).eq('id', game.id);
+    };
+
+    const advanceToNextTurn = async () => {
+        if (!game?.id || game.id === "local") return;
+
+        const answered = game.players_answered || [];
+        const currentTurnPlayer = game.current_turn_player_id;
+
+        // Add current player to answered list if not already there
+        const updatedAnswered = currentTurnPlayer && !answered.includes(currentTurnPlayer)
+            ? [...answered, currentTurnPlayer]
+            : answered;
+
+        // Find next player who hasn't answered (sorted by joined_at for deterministic order)
+        const sortedPlayers = [...players].sort((a, b) =>
+            a.joined_at.localeCompare(b.joined_at)
+        );
+        const nextPlayer = sortedPlayers.find(p => !updatedAnswered.includes(p.id));
+
+        if (nextPlayer) {
+            // Start next player's turn
+            await supabase.from('games').update({
+                players_answered: updatedAnswered,
+                current_turn_player_id: nextPlayer.id,
+                current_turn_phase: 'question',
+                current_turn_question: null,
+                current_turn_answer: null,
+                current_turn_correct: null,
+            }).eq('id', game.id);
+        } else {
+            // All players done this round
+            const nextRound = (game.current_round_number || 1) + 1;
+            if (nextRound > settings.totalRounds) {
+                // Game over
+                await supabase.from('games').update({
+                    status: 'finished' as const,
+                    players_answered: updatedAnswered,
+                    current_turn_player_id: null,
+                    current_turn_phase: null,
+                    current_turn_question: null,
+                    current_turn_answer: null,
+                    current_turn_correct: null,
+                }).eq('id', game.id);
+            } else {
+                // Advance to next round
+                await supabase.from('games').update({
+                    current_round_number: nextRound,
+                    current_round_subject: null,
+                    players_answered: [],
+                    current_turn_player_id: null,
+                    current_turn_phase: null,
+                    current_turn_question: null,
+                    current_turn_answer: null,
+                    current_turn_correct: null,
+                }).eq('id', game.id);
+            }
+        }
     };
 
     const createLocalGame = (hostName: string, avatar: string, interests: string, rounds: number, narratorStyle: NarratorStyle = "game_show", age: number = 30, playerCount: number = 1, difficultyLevel: number = 5, subjects: string[] = []): string => {
@@ -589,6 +698,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             getLastSubjectForPlayer, setSubjectForPlayer,
             getSelectedSubjectsForPlayer, setSelectedSubjectsForPlayer,
             updateRoundSubject, markPlayerAnswered, advanceToNextRound,
+            startPlayerTurn, broadcastQuestion, submitTurnAnswer, advanceToNextTurn,
             loadSavedProfile, saveCurrentProfile, finalizeGame,
         }}>
             {children}

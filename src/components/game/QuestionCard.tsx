@@ -18,6 +18,8 @@ interface QuestionCardProps {
     accentColor: string;
     questionType?: RoundType;
     difficulty?: number;
+    readOnly?: boolean;
+    spectatorAnswer?: string;
 }
 
 const OPTION_LETTERS = ["A", "B", "C", "D"];
@@ -41,12 +43,17 @@ export const QuestionCard = ({
     accentColor,
     questionType = "multiple_choice",
     difficulty,
+    readOnly = false,
+    spectatorAnswer,
 }: QuestionCardProps) => {
     const typeInfo = QUESTION_TYPE_INFO[questionType] || QUESTION_TYPE_INFO["multiple_choice"];
     const TypeIcon = typeInfo.Icon;
     const isTextInput = (questionType === "complete_phrase" || questionType === "estimation") && (!options || options.length === 0);
     const [textAnswer, setTextAnswer] = useState("");
     const [textSubmitted, setTextSubmitted] = useState(false);
+
+    // For spectator mode: use spectatorAnswer as the effective selected option
+    const effectiveSelectedOption = spectatorAnswer ?? selectedOption;
 
     const handleTextSubmit = () => {
         if (!textAnswer.trim() || textSubmitted || isRevealing) return;
@@ -96,18 +103,18 @@ export const QuestionCard = ({
                     <View style={[styles.textInputWrapper, { borderColor: isRevealing ? (textIsCorrect ? '#10b981' : '#ef4444') : `${accentColor}66` }]}>
                         <TextInput
                             style={styles.textInput}
-                            value={textAnswer}
-                            onChangeText={setTextAnswer}
-                            placeholder={questionType === "estimation" ? "Enter a number..." : "Type your answer..."}
+                            value={readOnly && spectatorAnswer ? spectatorAnswer : textAnswer}
+                            onChangeText={readOnly ? undefined : setTextAnswer}
+                            placeholder={readOnly ? "Waiting for answer..." : (questionType === "estimation" ? "Enter a number..." : "Type your answer...")}
                             placeholderTextColor="#475569"
-                            editable={!isRevealing && !textSubmitted}
+                            editable={!isRevealing && !textSubmitted && !readOnly}
                             keyboardType={questionType === "estimation" ? "numeric" : "default"}
                             returnKeyType="done"
-                            onSubmitEditing={handleTextSubmit}
+                            onSubmitEditing={readOnly ? undefined : handleTextSubmit}
                             autoCapitalize="none"
                             autoCorrect={false}
                         />
-                        {!isRevealing && !textSubmitted && (
+                        {!isRevealing && !textSubmitted && !readOnly && (
                             <TouchableOpacity
                                 onPress={handleTextSubmit}
                                 disabled={!textAnswer.trim()}
@@ -143,7 +150,7 @@ export const QuestionCard = ({
             ) : (
                 <View style={styles.optionsContainer}>
                     {options.map((option, index) => {
-                        const isSelected = selectedOption === option;
+                        const isSelected = effectiveSelectedOption === option;
                         const isCorrect = isRevealing && option === correctAnswer;
                         const isWrong = isRevealing && isSelected && option !== correctAnswer;
                         const isUnselected = isRevealing && !isSelected && !isCorrect;
@@ -161,18 +168,19 @@ export const QuestionCard = ({
                             >
                                 <TouchableOpacity
                                     onPress={() => {
-                                        if (!isRevealing) {
+                                        if (!isRevealing && !readOnly) {
                                             GameHaptics.select();
                                             onSelect(option);
                                         }
                                     }}
-                                    disabled={isRevealing}
-                                    activeOpacity={0.7}
+                                    disabled={isRevealing || readOnly}
+                                    activeOpacity={readOnly ? 1 : 0.7}
                                     style={[
                                         styles.option,
                                         isSelected && !isRevealing && [styles.optionSelected, { borderColor: accentColor, backgroundColor: `${accentColor}22` }],
                                         isCorrect && styles.optionCorrect,
                                         isWrong && styles.optionWrong,
+                                        readOnly && !isRevealing && { opacity: 0.8 },
                                     ]}
                                 >
                                     <View style={[

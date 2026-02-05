@@ -20,6 +20,12 @@ export type GameData = {
     current_round_subject: string | null;
     players_answered: string[];
     created_at: string;
+    // Turn-based online multiplayer fields
+    current_turn_player_id: string | null;
+    current_turn_question: any | null;
+    current_turn_answer: string | null;
+    current_turn_correct: boolean | null;
+    current_turn_phase: 'question' | 'revealing' | null;
 };
 
 export type PlayerData = {

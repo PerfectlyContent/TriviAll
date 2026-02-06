@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, TouchableOpacity, SafeAreaView, StyleSheet, Dimensions } from "react-native";
+import { View, Text, TouchableOpacity, SafeAreaView, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { MotiView } from "moti";
-import { Zap, TrendingUp, Award, Target } from "lucide-react-native";
+import { Zap, TrendingUp, Award, Target, RefreshCw } from "lucide-react-native";
 import { useGame } from "../context/GameContext";
 import { GameHaptics } from "../utils/sounds";
+import { PlayerStorage } from "../utils/storage";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -20,8 +21,57 @@ const PARTICLES = Array.from({ length: 12 }, (_, i) => ({
 
 export default function WelcomeScreen() {
     const router = useRouter();
-    const { savedProfile, savedPlayerStats } = useGame();
+    const { savedProfile, savedPlayerStats, rejoinGame, game } = useGame();
     const [showStats, setShowStats] = useState(false);
+    const [hasSession, setHasSession] = useState(false);
+    const [isRejoining, setIsRejoining] = useState(false);
+    const [rejoinError, setRejoinError] = useState<string | null>(null);
+
+    // Check for active session on mount
+    useEffect(() => {
+        const checkSession = async () => {
+            const session = await PlayerStorage.loadActiveSession();
+            if (session) {
+                setHasSession(true);
+                console.log(`[HOME] Found active session for game ${session.gameCode}`);
+            }
+        };
+        checkSession();
+    }, []);
+
+    // If we already rejoined and game is loaded + playing, navigate
+    useEffect(() => {
+        if (isRejoining && game?.status === 'playing') {
+            setIsRejoining(false);
+            router.push("/game/round");
+        } else if (isRejoining && game?.status === 'lobby') {
+            setIsRejoining(false);
+            router.push("/game/lobby");
+        }
+    }, [game?.status, isRejoining]);
+
+    const handleRejoin = async () => {
+        setIsRejoining(true);
+        setRejoinError(null);
+        try {
+            const success = await rejoinGame();
+            if (!success) {
+                setIsRejoining(false);
+                setHasSession(false);
+                setRejoinError("Couldn't rejoin — the game may have ended.");
+            }
+            // If success, the useEffect above will navigate when game state loads
+        } catch (e: any) {
+            setIsRejoining(false);
+            setHasSession(false);
+            setRejoinError(e.message || "Failed to rejoin game");
+        }
+    };
+
+    const handleDismissRejoin = async () => {
+        await PlayerStorage.clearActiveSession();
+        setHasSession(false);
+    };
 
     useEffect(() => {
         if (savedProfile && savedPlayerStats && savedPlayerStats.gamesPlayed > 0) {
@@ -112,6 +162,38 @@ export default function WelcomeScreen() {
                             <Text style={styles.statValue}>{savedPlayerStats.bestStreak}</Text>
                             <Text style={styles.statLabel}>Best Streak</Text>
                         </View>
+                    </MotiView>
+                )}
+
+                {/* Rejoin banner */}
+                {hasSession && (
+                    <MotiView
+                        from={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        style={styles.rejoinBanner}
+                    >
+                        <Text style={styles.rejoinTitle}>🎮 Game in Progress</Text>
+                        <Text style={styles.rejoinSubtitle}>You have an active game session</Text>
+                        <View style={styles.rejoinButtons}>
+                            <TouchableOpacity
+                                onPress={handleRejoin}
+                                disabled={isRejoining}
+                                style={styles.rejoinButton}
+                            >
+                                {isRejoining ? (
+                                    <ActivityIndicator size="small" color="white" />
+                                ) : (
+                                    <>
+                                        <RefreshCw size={18} color="white" />
+                                        <Text style={styles.rejoinButtonText}>Rejoin Game</Text>
+                                    </>
+                                )}
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={handleDismissRejoin} style={styles.rejoinDismiss}>
+                                <Text style={styles.rejoinDismissText}>Dismiss</Text>
+                            </TouchableOpacity>
+                        </View>
+                        {rejoinError && <Text style={styles.rejoinError}>{rejoinError}</Text>}
                     </MotiView>
                 )}
 
@@ -310,5 +392,62 @@ const styles = StyleSheet.create({
     },
     joinButtonText: {
         color: '#7c3aed',
+    },
+    // Rejoin styles
+    rejoinBanner: {
+        width: '100%',
+        backgroundColor: 'rgba(16, 185, 129, 0.12)',
+        borderWidth: 1,
+        borderColor: 'rgba(16, 185, 129, 0.3)',
+        borderRadius: 16,
+        padding: 16,
+        marginBottom: 20,
+        alignItems: 'center',
+    },
+    rejoinTitle: {
+        color: '#10b981',
+        fontSize: 17,
+        fontWeight: 'bold',
+        marginBottom: 4,
+    },
+    rejoinSubtitle: {
+        color: '#94a3b8',
+        fontSize: 13,
+        marginBottom: 12,
+    },
+    rejoinButtons: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    rejoinButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: '#10b981',
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 12,
+    },
+    rejoinButtonText: {
+        color: 'white',
+        fontSize: 15,
+        fontWeight: 'bold',
+    },
+    rejoinDismiss: {
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 12,
+        backgroundColor: 'rgba(255,255,255,0.08)',
+    },
+    rejoinDismissText: {
+        color: '#94a3b8',
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    rejoinError: {
+        color: '#ef4444',
+        fontSize: 13,
+        marginTop: 8,
+        fontWeight: '600',
     },
 });

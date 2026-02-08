@@ -566,7 +566,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         const nextPlayer = sortedPlayers.find(p => !updatedAnswered.includes(p.id));
 
-        console.log(`[GAME] advanceToNextTurn: answered=${updatedAnswered.length}/${players.length}, nextPlayer=${nextPlayer?.name || 'NONE'}`);
+        console.log(`[GAME] advanceToNextTurn: currentTurnPlayer=${currentTurnPlayer?.slice(-4)}, answered=${JSON.stringify(updatedAnswered.map(id => id.slice(-4)))}, players=${JSON.stringify(sortedPlayers.map(p => ({ name: p.name, id: p.id.slice(-4) })))}, nextPlayer=${nextPlayer?.name || 'NONE'} (${nextPlayer?.id?.slice(-4) || 'N/A'})`);
 
         if (nextPlayer) {
             // Start next player's turn

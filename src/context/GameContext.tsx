@@ -376,6 +376,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPlayers([playerData]);
         setIsHost(true);
         setCurrentPlayerId(playerData.id);
+        console.log(`[GAME] ✅ createGame: Set currentPlayerId=${playerData.id} (${playerData.id.slice(-4)}) [HOST]`);
         setSettings({ totalRounds: rounds, mode: "different_devices", playerCount: 0, narratorStyle });
         setGameStats({ [playerData.id]: createDefaultStats() });
         setGameSubjects(subjects);
@@ -425,6 +426,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPlayers(currentPlayers || []);
         setIsHost(false);
         setCurrentPlayerId(playerData.id);
+        console.log(`[GAME] ✅ joinGame: Set currentPlayerId=${playerData.id} (${playerData.id.slice(-4)})`);
         // Load game-wide subjects from the game record
         if (gameData.subjects && Array.isArray(gameData.subjects)) {
             setGameSubjects(gameData.subjects);

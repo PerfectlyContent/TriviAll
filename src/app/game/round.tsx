@@ -69,6 +69,17 @@ export default function RoundScreen() {
     // Turn-based online: who is the active player?
     const isMyTurn = isOnline && game?.current_turn_player_id === currentPlayerId;
     const isSpectating = isOnline && !isMyTurn && game?.current_turn_player_id != null;
+
+    // Debug: log turn detection and initial state
+    useEffect(() => {
+        console.log(`[ROUND] 🚀 Component state: currentPlayerId=${currentPlayerId || 'NULL'}, isOnline=${isOnline}, players=${players.length}`);
+    }, []);
+
+    useEffect(() => {
+        if (isOnline && game) {
+            console.log(`[ROUND] 🔍 Turn check: myId=${currentPlayerId || 'NULL'} (${currentPlayerId?.slice(-4) || 'N/A'}), turnId=${game.current_turn_player_id || 'NULL'} (${game.current_turn_player_id?.slice(-4) || 'N/A'}), isMyTurn=${isMyTurn}, isSpectating=${isSpectating}, phase=${game.current_turn_phase}`);
+        }
+    }, [isOnline, game?.current_turn_player_id, game?.current_turn_phase, currentPlayerId, isMyTurn, isSpectating]);
     const activeOnlinePlayer = isOnline
         ? players.find(p => p.id === game?.current_turn_player_id) || null
         : null;

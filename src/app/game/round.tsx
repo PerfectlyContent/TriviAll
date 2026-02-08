@@ -59,6 +59,8 @@ export default function RoundScreen() {
     // Track the last turn we processed to avoid re-triggering effects
     const lastProcessedTurnId = useRef<string | null>(null);
     const lastProcessedTurnPhase = useRef<string | null>(null);
+    // Track if countdown has started for current turn to prevent double-start
+    const countdownStartedForTurn = useRef<string | null>(null);
 
     // Mode detection
     const isOnline = settings.mode === "different_devices";
@@ -176,6 +178,7 @@ export default function RoundScreen() {
             hasRecordedSpectatorAnswer.current = null;
             lastProcessedTurnId.current = null;
             lastProcessedTurnPhase.current = null;
+            countdownStartedForTurn.current = null;
             return;
         }
 
@@ -274,6 +277,7 @@ export default function RoundScreen() {
             }
             lastProcessedTurnId.current = turnKey;
             lastProcessedTurnPhase.current = 'question';
+            countdownStartedForTurn.current = null; // Allow countdown to start for this new turn
             console.log(`[ROUND] 🎯 My turn detected! turnKey=${turnKey}`);
             // It's now my turn — reset local state and start countdown
             setPhase("starting");
@@ -320,43 +324,48 @@ export default function RoundScreen() {
     // Countdown effect — after countdown, auto-generate question
     // For online: only the active player generates; spectators wait for broadcast
     useEffect(() => {
-        if (phase === "starting") {
-            // Online spectator: don't generate, just wait
-            if (isOnline && !isMyTurn) {
-                console.log(`[ROUND] ⏳ Spectator waiting during starting phase`);
-                return;
-            }
+        if (phase !== "starting") return;
 
-            // For online active player, wait for subject from host
-            if (isOnline && isMyTurn && !roundSubject) {
-                // If I'm host, subject was already set. If not, wait for it.
-                if (!isHost && !roundSubject) {
-                    console.log(`[ROUND] ⏳ Active player waiting for subject from host`);
-                    return;
-                }
-            }
-
-            // For same_device, pick subject on the fly
-            const subjectForRound = isOnline ? roundSubject : pickRandomSubject();
-            if (!isOnline) setRoundSubject(subjectForRound);
-
-            console.log(`[ROUND] ⏱ Starting countdown, subject="${subjectForRound}", isMyTurn=${isMyTurn}`);
-
-            GameHaptics.countdown();
-            const interval = setInterval(() => {
-                setCountdown(prev => {
-                    if (prev <= 1) {
-                        clearInterval(interval);
-                        generateNextQuestion(subjectForRound || undefined);
-                        return 3;
-                    }
-                    GameHaptics.countdown();
-                    return prev - 1;
-                });
-            }, 1000);
-            return () => clearInterval(interval);
+        // Online spectator: don't generate, just wait
+        if (isOnline && !isMyTurn) {
+            console.log(`[ROUND] ⏳ Spectator waiting during starting phase`);
+            return;
         }
-    }, [phase, currentPlayerIndex, currentRound, roundSubject, isOnline, isHost, isMyTurn]);
+
+        // For online: MUST have subject before starting countdown
+        if (isOnline && !roundSubject) {
+            console.log(`[ROUND] ⏳ Waiting for subject (roundSubject is null)`);
+            return;
+        }
+
+        // Prevent double countdown for the same turn
+        const turnKey = isOnline ? `${currentPlayerId}_${currentRound}` : `local_${currentPlayerIndex}_${currentRound}`;
+        if (countdownStartedForTurn.current === turnKey) {
+            console.log(`[ROUND] ⏳ Countdown already started for ${turnKey}, skipping`);
+            return;
+        }
+        countdownStartedForTurn.current = turnKey;
+
+        // For same_device, pick subject on the fly
+        const subjectForRound = isOnline ? roundSubject : pickRandomSubject();
+        if (!isOnline) setRoundSubject(subjectForRound);
+
+        console.log(`[ROUND] ⏱ Starting countdown, subject="${subjectForRound}", isMyTurn=${isMyTurn}, turnKey=${turnKey}`);
+
+        GameHaptics.countdown();
+        const interval = setInterval(() => {
+            setCountdown(prev => {
+                if (prev <= 1) {
+                    clearInterval(interval);
+                    generateNextQuestion(subjectForRound || undefined);
+                    return 3;
+                }
+                GameHaptics.countdown();
+                return prev - 1;
+            });
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [phase, currentPlayerIndex, currentRound, roundSubject, isOnline, isMyTurn, currentPlayerId]);
 
     const handleTimerExpire = useCallback(() => {
         if (phase === "question") {
@@ -440,6 +449,7 @@ export default function RoundScreen() {
             // Clear the processed turn so the next turn detection works
             lastProcessedTurnId.current = null;
             lastProcessedTurnPhase.current = null;
+            countdownStartedForTurn.current = null;
         } else {
             // Same device: cycle through players, then advance round
             if (currentPlayerIndex < players.length - 1) {
